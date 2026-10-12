@@ -35,14 +35,6 @@ The exact input format and information is not completely clear yet and will be p
 My goal is to compare my results to the results in papers [4] and [5]. Therefore, I have contacted the authors to request access to their data set for a fair comparison. However, since a cannot rely on this I created my own script (see: `generate_data.py`) for generating a data set using the topology optimization library [topoptlab](https://github.com/stefanhiemer/topoptlab), from which all necessary data can be obtained.
 
 
-## Setup
-
-Python 3.12.4 or newer is required by `topoptlab`. With [uv](https://docs.astral.sh/uv/) installed, set up the environment using:
-
-```bash
-uv sync
-```
-
 ## Citations
 
 Articles referenced in this README:
