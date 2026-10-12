@@ -32,7 +32,7 @@ The exact input format and information is not completely clear yet and will be p
 
 ## Data Set
 
-My goal is to compare my results to the results in papers [4] and [5]. Therefore, I have contacted the authors to request access to their data set for a fair comparison. However, since a cannot rely on this I may create my own similar data set using the topology optimization library [topoptlab](https://github.com/stefanhiemer/topoptlab), (possibly with help from AI, to not get stuck on generating the data, when the focus is on creating the model).
+My goal is to compare my results to the results in papers [4] and [5]. Therefore, I have contacted the authors to request access to their data set for a fair comparison. However, since a cannot rely on this I created my own script (see: `generate_data.py`) for generating a data set using the topology optimization library [topoptlab](https://github.com/stefanhiemer/topoptlab), from which all necessary data can be obtained.
 
 
 ## Setup
