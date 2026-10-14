@@ -25,9 +25,14 @@ N_PROCESSES = 6
 def generate_data():
     
     n_samples = 10000
-    output_file = "topopt_data.csv"
-    # check if output file already exists and remove it
-    import os
+    
+    # set output directory and file for storing generated data
+    output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "raw_data")
+    os.makedirs(output_dir, exist_ok=True)
+    output_file = os.path.join(output_dir, "topopt_data.csv")
+    
+    
+    # check if output file already exists, so we don't accidentally overwrite existing data
     if os.path.exists(output_file):
         print(f"File {output_file} already exists.")
         print(f"Data will be appended to the existing file.")
