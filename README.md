@@ -17,23 +17,40 @@ A typical example for this (which is also what will be addressed in this project
 
 While a lot of topology optimization types and methods exist, the basic idea is usually the same, namely iterative improvement based on some kind of computation or simulation. An example could be to start with an initial design, or fully filled volume. Then perform finite element analysis (FEA) or some other type of simulation is to compute the property of interest, e.g. mechanical stress (von Mises stress) within the structure. Given the results, the structure is modified. E.g. in low stress regions, material is removed. After that a new FEA is performed and this process is repeated iteratively until convergence. Other methods use gradient-based optimization or heuristic algorithms to guide the material distribution, but all require repeated and often costly evaluations of each iteration.
 
-In summary, classical topology optimization methods iteratively improve the design based on the results of FEA. However, these can be extremely computationally expensive. Additionally, given the iterative nature of the process, even efficient simulations can amount to a long time throughout the whole optimization process. 
+In summary, classical topology optimization methods iteratively improve the design based on the results of some computation. However, these can be extremely computationally expensive. Additionally, given the iterative nature of the process, even efficient computation can amount to a long time throughout the whole optimization process. Finally convergence is not always guaranteed.
 
-Deep learning models may offer highly efficient alternative, as they may skip the whole iterative optimization process and directly predict the optimal design given the loads and constraints.
+Deep learning models may offer highly efficient alternative, as they may skip the whole iterative optimization process and directly predict the optimal design given the loads and constraints in real time (or at least very fast).
 
 ## Literature and Approach
 
-Various approaches have been proposed for using deep learning in topology optimization, e.g. Convolutional NN [1], GANs [2] or Diffusion Models [3]. A diffusion based foundation model has also been published in [7]
+Various approaches have been proposed for using deep learning in topology optimization, e.g. Convolutional NN [1], GANs [2] or Diffusion Models [3]. A foundation modelhas also been published in [7], which is based on a diffusion model.
 
-My approach in this project will be to implement a transformer based model for directly predicting the optimal design from the inputs. This idea has not been explored extensively in the literature so far. In fact, I found very little prior work, mainly from a single group of researchers at The University of North Carolina at Charlotte. They have published two papers on this topic, one being the evolution of the previous one. The articles are [4] and [5]. However, they dont reveal details on their specific architecture and hyperparamenter. A framework for transformers on images (Vision Transformer, ViT) has already been introduced by Dosovitskiy et al. in [6] which has been the basis for the transformers for topology optimization in the aforementioned papers. Depending on the exact inputs I may follow this framework while building my own architecture. 
+My approach in this project will be to implement a transformer based model for directly predicting the optimal design from the inputs. This idea has not been explored extensively in the literature so far. In fact, I found very little prior work, mainly from a single group of researchers at The University of North Carolina at Charlotte. They have published two papers on this topic, one being the evolution of the previous one. The articles are [4] and [5]. However, they dont reveal details on their specific architecture and hyperparamenter. A framework for transformers on images (Vision Transformer, ViT) has already been introduced by Dosovitskiy et al. in [6] which has been the basis for the transformers for topology optimization in the aforementioned papers.
 
-The exact input format and information is not completely clear yet and will be part of the exploration. However, there will definitely be information about the loads and boundary conditions as well as volume fraction of the final result. I.e. how much of the total available volume will be occupied by material. The input might be enhanced e.g. by e.g. stress distribution from an initial FEA simulation. Material properties will not be included as I will assume isotropic and homogeneous material for simplicity and absolute stress values will be normalized if necessary. 
+My approach will be to start with a basic Vision Transformer architecture and adapt it to the specific requirements of topology optimization. The plan is to start out similar to the model proposed in [5], which is also a ViT taking loads, BCs, volume fraction, stress distribution and strain energy density as inputs. Material properties will not be included as I will assume isotropic and homogeneous material for simplicity, however, this would be a interesting topic for future exploration.
+Creating this model will give me some experience which will be the basis for further exploration. Potential variation I have in mind are:
+- Wasserstein loss function (also known as Earth Mover's Distance, penalizes not only the pixel-wise differences but also the overall spatial distribution of the predicted and target topologies, which can lead to more realistic and spatially coherent predictions)
+- Convolutional enhancements (Integrating convolutional layers in series or in parallel with the transformer layers to capture features of the stres and strain energy distributions)
+- Maybe a well thought out custom fingerprint for the input data to avoid computing the full stress and strain energy distributions and saving even more time
+- ... (Many ideas will come up during the exploration)
 
 
 ## Data Set
 
-My goal is to compare my results to the results in papers [4] and [5]. Therefore, I have contacted the authors to request access to their data set for a fair comparison. However, since a cannot rely on this I created my own script (see: `generate_data.py`) for generating a data set using the topology optimization library [topoptlab](https://github.com/stefanhiemer/topoptlab), from which all necessary data can be obtained.
+My goal is to compare my results to the results in papers [4] and [5]. Therefore, I have contacted the authors to request access to their data set for a fair comparison. However, since I cannot rely on this I created my own dataset already similar to the one described in [5] (see: `generate_data.py`) using the topology optimization library [topoptlab](https://github.com/stefanhiemer/topoptlab).
 
+The dataset consists of 10000 samples of optimized topologies on a 64x64 grid given boundary conditions and a load. They where generated similar to [5] by randomly choosing between 1 and 4 predefined boundary conditions, a unit load applied on a random free boundary node, sampled from 6 equally spaced load directions. Furthermore a volume fraction, which is a optimization parameter, is randomly chosen between 0.3 and 0.5.
+These parameters where used to create compute the optimized topology as well as a von-Mises stress, and strain energy density distribution. The resulting data is stored in the CSV file on my local machine. The data will furthermore be augmented by mirroring and rotating to encourage equivariance of the model.
+
+## Timeline
+
+| Task | Date | Notes |
+|------|----------|-----|
+| Implement Vision Transformer model | end of october | First need to learn about transformers and ViT architecture |
+| Try to get initial results with basic ViT | start of november | Initial experiments with the implemented model |
+| Explore architectural modifications, wasserstein loss, convolutional enhancements, ... | until december |  |
+| Hyperparameter tuning and final evaluation | december - deadline |
+| Documentation and reporting of results | december - deadline |
 
 ## Citations
 

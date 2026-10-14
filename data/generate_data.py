@@ -24,7 +24,7 @@ N_PROCESSES = 6
 
 def generate_data():
     
-    n_samples = 8000
+    n_samples = 10000
     output_file = "topopt_data.csv"
     # check if output file already exists and remove it
     import os
@@ -48,7 +48,7 @@ def generate_data():
     # samples are computed in parallel worker processes; only this (main) process writes to the csv
     with Pool(processes=N_PROCESSES) as pool:
         for i, (row, optimization_time, fem_time) in enumerate(pool.imap_unordered(partial(_generate_sample_safe, output_file=output_file), seeds)):
-            #! a failed sample (e.g. MemoryError) is skipped and logged instead of aborting the whole run
+            # a failed sample (e.g. MemoryError) is skipped and logged instead of aborting the whole run
             if row is None:
                 print(f"Sample {i+1}/{n_samples} FAILED and was skipped (seed {optimization_time}): {fem_time}")
                 continue
