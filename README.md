@@ -47,10 +47,10 @@ These parameters where used to create compute the optimized topology as well as 
 | Task | Date | Notes |
 |------|----------|-----|
 | Implement Vision Transformer model | end of october | First need to learn about transformers and ViT architecture |
-| Try to get initial results with basic ViT | start of november | Initial experiments with the implemented model |
-| Explore architectural modifications, wasserstein loss, convolutional enhancements, ... | until december |  |
-| Hyperparameter tuning and final evaluation | december - deadline |
-| Documentation and reporting of results | december - deadline |
+| Try to get initial results with basic ViT | start of november | - |
+| Explore architectural modifications | until december | wasserstein loss, convolutional enhancements, custom fingerprints |
+| Hyperparameter tuning | december - deadline | - |
+| Documentation and reporting of results | december - deadline | Report will be done parallel to the experiments |
 
 ## Citations
 
