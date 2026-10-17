@@ -4,9 +4,9 @@ import numpy as np
 from pathlib import Path
 from enum import StrEnum
 
-from logging import Logger
+import logging
 
-logger = Logger(__name__)
+logger = logging.getLogger(__name__)
 
 LABELED_DATA_DIR_PATH = Path(__file__).parent.parent / "data/labeled_data/"
 
@@ -33,14 +33,16 @@ def params_vectors(load, fixed_dofs, volume_fraction):
     """Returns a representation of the load, the boundary conditions and the volume fraction
     with length 1 + 4 + 4*64 = 261 (volume fraction + load representation + boundary conditions)
     """
-    
-    for i in range(0, len(fixed_dofs), 2):
-        assert fixed_dofs[i] + 1 == fixed_dofs[i+1], "DOF pairs must be consecutive"
+    fixed_dofs_set = set(fixed_dofs)
+    for dof in fixed_dofs_set:
+        # just rechecking the data
+        partner = dof + 1 if dof % 2 == 0 else dof - 1
+        assert partner in fixed_dofs_set, "DOF pairs must be consecutive"
     assert 0 <= volume_fraction <= 1, "Volume fraction must be between 0 and 1"
     
     # first two elements of the load representation are the normalized coordinates of the load application point
     loads = torch.zeros(4)
-    loads[0], loads[1] = _idx_to_coordinates(load[0], normalize=True)
+    loads[0], loads[1] = _idx_to_coordinates(int(load[0]), normalize=True)
     
     # second two elements are the load vector
     loads[2] = load[1]
@@ -68,7 +70,7 @@ def params_vectors(load, fixed_dofs, volume_fraction):
 
 class Mode(StrEnum):
     TRAIN = "train"
-    VALIDATE = "validate"
+    VALIDATE = "val"
     TEST = "test"
 
 class TODataset(Dataset):
@@ -79,27 +81,12 @@ class TODataset(Dataset):
         
         dir = Path(LABELED_DATA_DIR_PATH / mode)
         
-        if mode == Mode.TRAIN:
-            densities = torch.as_tensor(np.load(dir / "density_train.npy", allow_pickle=True))
-            fixed_dofs = torch.as_tensor(np.load(dir / "fixed_dof_train.npy", allow_pickle=True))
-            loads = torch.as_tensor(np.load(dir / "load_train.npy", allow_pickle=True))
-            # strain_energy_densities = torch.as_tensor(np.load(training_dir / "strain_energy_density_train.npy", allow_pickle=True))
-            stresses = torch.as_tensor(np.load(dir / "stress_train.npy", allow_pickle=True))
-            volume_fractions = torch.as_tensor(np.load(dir / "volume_fraction_train.npy", allow_pickle=True))
-        elif mode == Mode.VALIDATE:
-            densities = torch.as_tensor(np.load(dir / "density_val.npy", allow_pickle=True))
-            fixed_dofs = torch.as_tensor(np.load(dir / "fixed_dof_val.npy", allow_pickle=True))
-            loads = torch.as_tensor(np.load(dir / "load_val.npy", allow_pickle=True))
-            # strain_energy_densities = torch.as_tensor(np.load(training_dir / "strain_energy_density_val.npy", allow_pickle=True))
-            stresses = torch.as_tensor(np.load(dir / "stress_val.npy", allow_pickle=True))
-            volume_fractions = torch.as_tensor(np.load(dir / "volume_fraction_val.npy", allow_pickle=True))
-        elif mode == Mode.TEST:
-            densities = torch.as_tensor(np.load(dir / "density_test.npy", allow_pickle=True))
-            fixed_dofs = torch.as_tensor(np.load(dir / "fixed_dof_test.npy", allow_pickle=True))
-            loads = torch.as_tensor(np.load(dir / "load_test.npy", allow_pickle=True))
-            # strain_energy_densities = torch.as_tensor(np.load(training_dir / "strain_energy_density_test.npy", allow_pickle=True))
-            stresses = torch.as_tensor(np.load(dir / "stress_test.npy", allow_pickle=True))
-            volume_fractions = torch.as_tensor(np.load(dir / "volume_fraction_test.npy", allow_pickle=True))
+        densities = torch.as_tensor(np.load(dir / f"density_{mode.value}.npy"))
+        fixed_dofs = np.load(dir / f"fixed_dof_{mode.value}.npy", allow_pickle=True)
+        loads = torch.as_tensor(np.load(dir / f"load_{mode.value}.npy"))
+        # strain_energy_densities = torch.as_tensor(np.load(training_dir / f"strain_energy_density_{mode.value}.npy"))
+        stresses = torch.as_tensor(np.load(dir / f"stress_{mode.value}.npy"))
+        volume_fractions = torch.as_tensor(np.load(dir / f"volume_fraction_{mode.value}.npy"))
 
         
         self.n_samples = densities.shape[0]

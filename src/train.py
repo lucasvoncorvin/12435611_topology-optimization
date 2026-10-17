@@ -5,6 +5,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 
+import logging
+
 N_EPOCHS = 10
 
 
@@ -71,4 +73,8 @@ def optimize():
         
         
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.DEBUG
+    )
     optimize()
+    
