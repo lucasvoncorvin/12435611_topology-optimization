@@ -4,6 +4,10 @@ import numpy as np
 from pathlib import Path
 from enum import StrEnum
 
+from logging import Logger
+
+logger = Logger(__name__)
+
 LABELED_DATA_DIR_PATH = Path(__file__).parent.parent / "data/labeled_data/"
 
 def _idx_to_coordinates(idx, normalize=False):
@@ -70,36 +74,40 @@ class Mode(StrEnum):
 class TODataset(Dataset):
     def __init__(self, mode: Mode):
         
+        logger.debug(f"Initializing Dataset with mode {mode}")
+        
         
         dir = Path(LABELED_DATA_DIR_PATH / mode)
         
         if mode == Mode.TRAIN:
-            densities = torch.as_tensor(np.load(dir / "density_train.npy"))
-            fixed_dofs = torch.as_tensor(np.load(dir / "fixed_dof_train.npy"))
-            loads = torch.as_tensor(np.load(dir / "load_train.npy"))
-            # strain_energy_densities = torch.as_tensor(np.load(training_dir / "strain_energy_density_train.npy"))
-            stresses = torch.as_tensor(np.load(dir / "stress_train.npy"))
-            volume_fractions = torch.as_tensor(np.load(dir / "volume_fraction_train.npy"))
+            densities = torch.as_tensor(np.load(dir / "density_train.npy", allow_pickle=True))
+            fixed_dofs = torch.as_tensor(np.load(dir / "fixed_dof_train.npy", allow_pickle=True))
+            loads = torch.as_tensor(np.load(dir / "load_train.npy", allow_pickle=True))
+            # strain_energy_densities = torch.as_tensor(np.load(training_dir / "strain_energy_density_train.npy", allow_pickle=True))
+            stresses = torch.as_tensor(np.load(dir / "stress_train.npy", allow_pickle=True))
+            volume_fractions = torch.as_tensor(np.load(dir / "volume_fraction_train.npy", allow_pickle=True))
         elif mode == Mode.VALIDATE:
-            densities = torch.as_tensor(np.load(dir / "density_val.npy"))
-            fixed_dofs = torch.as_tensor(np.load(dir / "fixed_dof_val.npy"))
-            loads = torch.as_tensor(np.load(dir / "load_val.npy"))
-            # strain_energy_densities = torch.as_tensor(np.load(training_dir / "strain_energy_density_val.npy"))
-            stresses = torch.as_tensor(np.load(dir / "stress_val.npy"))
-            volume_fractions = torch.as_tensor(np.load(dir / "volume_fraction_val.npy"))
+            densities = torch.as_tensor(np.load(dir / "density_val.npy", allow_pickle=True))
+            fixed_dofs = torch.as_tensor(np.load(dir / "fixed_dof_val.npy", allow_pickle=True))
+            loads = torch.as_tensor(np.load(dir / "load_val.npy", allow_pickle=True))
+            # strain_energy_densities = torch.as_tensor(np.load(training_dir / "strain_energy_density_val.npy", allow_pickle=True))
+            stresses = torch.as_tensor(np.load(dir / "stress_val.npy", allow_pickle=True))
+            volume_fractions = torch.as_tensor(np.load(dir / "volume_fraction_val.npy", allow_pickle=True))
         elif mode == Mode.TEST:
-            densities = torch.as_tensor(np.load(dir / "density_test.npy"))
-            fixed_dofs = torch.as_tensor(np.load(dir / "fixed_dof_test.npy"))
-            loads = torch.as_tensor(np.load(dir / "load_test.npy"))
-            # strain_energy_densities = torch.as_tensor(np.load(training_dir / "strain_energy_density_test.npy"))
-            stresses = torch.as_tensor(np.load(dir / "stress_test.npy"))
-            volume_fractions = torch.as_tensor(np.load(dir / "volume_fraction_test.npy"))
+            densities = torch.as_tensor(np.load(dir / "density_test.npy", allow_pickle=True))
+            fixed_dofs = torch.as_tensor(np.load(dir / "fixed_dof_test.npy", allow_pickle=True))
+            loads = torch.as_tensor(np.load(dir / "load_test.npy", allow_pickle=True))
+            # strain_energy_densities = torch.as_tensor(np.load(training_dir / "strain_energy_density_test.npy", allow_pickle=True))
+            stresses = torch.as_tensor(np.load(dir / "stress_test.npy", allow_pickle=True))
+            volume_fractions = torch.as_tensor(np.load(dir / "volume_fraction_test.npy", allow_pickle=True))
 
         
         self.n_samples = densities.shape[0]
         n_elements = 64*64
         n_patches = 8*8
         n_elements_per_patch = 8*8
+        
+        logger.debug(f"Dataset: n_samples {self.n_samples}")
         
         
         # organize the data into samples
@@ -137,6 +145,8 @@ class TODataset(Dataset):
         # concatenate params with distributions, s.t. each feature vector contains both
         # the first 1+4+4*64 = 261 elements correspond to the params, the rest to the stress samples of size n_patches*n_elements_per_patch
         self.x = torch.cat([params, stress_samples], dim=1)
+        
+        logger.debug("Dataset initialized succesfully")
         
 
     def __len__(self):
