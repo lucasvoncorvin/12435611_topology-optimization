@@ -6,7 +6,7 @@ EMBEDDING_DIMS = 16
 QUERY_DIMS = 8
 N_ATTENTION_BLOCKS = 4
 
-def _idx_to_coordinates(idx, normalize=True):
+def _idx_to_coordinates(idx, normalize=False):
     """translate a node index to its (normalized) coordinates within the grid"""
     row = idx // 64
     col = idx % 64
@@ -20,18 +20,20 @@ def attention(keys, queries, values):
     weights = torch.softmax(scores, dim=-1)
     return weights @ values
 
-def load_and_bc(load, fixed_dofs):
-    """Returns a representation of the load and the boundary conditions"""
+def params_vectors(load, fixed_dofs, volume_fraction):
+    """Returns a representation of the load, the boundary conditions and the volume fraction
+    with length 1 + 4 + 4*64 = 256 (volume fraction + load representation + boundary conditions)
+    """
     
     assert len(fixed_dofs) == 65*65*2, "Number of fixed DOFs must be EDGE_LENGTH squared times 2 (number of nodes * DOFs per node)"
     # ensure that dofs of the same node are the same value, since we fix both dimensions
-    for i in range(0, len(load), 2):
+    for i in range(0, len(fixed_dofs), 2):
         assert fixed_dofs[i] == fixed_dofs[i+1], "DOFs of the same node must be the same"
-        
+    assert 0 <= volume_fraction <= 1, "Volume fraction must be between 0 and 1"
     
-    # first two elements are the normalized coordinates of the load application point
+    # first two elements of the load representation are the normalized coordinates of the load application point
     loads = torch.zeros(4)
-    loads[0], loads[1] = _idx_to_coordinates(load[0])
+    loads[0], loads[1] = _idx_to_coordinates(load[0], normalize=True)
     
     # second two elements are the load vector
     loads[2] = load[1]
@@ -41,14 +43,15 @@ def load_and_bc(load, fixed_dofs):
     # 1: fixed in both dimensions, 0: free
     
     bc = torch.zeros(4*64) # number of boundary nodes is 4*64
-    for i in range(len(fixed_dofs / 2)):
-        counter = 0
-        row, col = _idx_to_coordinates(i // 2)
+    counter = 0
+    for i in range(len(fixed_dofs) // 2):
+        row, col = _idx_to_coordinates(i, normalize=False)
         if row in [0, 64] and col in [0, 64]:
-            bc[counter] = fixed_dofs[i]
+            bc[counter] = fixed_dofs[i*2]
             counter += 1
+    
 
-    return torch.cat([loads, bc])
+    return torch.cat([torch.tensor([volume_fraction]), loads, bc])
 
 
 def _positional_encoding(position, d_model=EMBEDDING_DIMS//2):
@@ -81,11 +84,10 @@ class ViT(torch.nn.Module):
         
         self.n_patches = 8*8 # 8x8 image patches -> 8*8 = 64 patch in 64x64 grid
         self.patch_size = 8*8
-        self.load_and_bc_size = 64 # todo: correct this once a sensible representation of the load and bc has been established
         
         # input and output
         self.linear_embed = nn.Linear(self.patch_size, EMBEDDING_DIMS)
-        self.linear_bcs = nn.Linear(self.load_and_bc_size, EMBEDDING_DIMS)
+        self.linear_param = nn.Linear(1+4+4*64, EMBEDDING_DIMS) # dimension of the parameter vector
         self.readout = nn.Linear(EMBEDDING_DIMS*self.n_patches, self.n_patches*self.patch_size) # get the whole optimized topology at once
         
         # attention stuff
@@ -96,7 +98,7 @@ class ViT(torch.nn.Module):
         
         
         
-    def forward(self, stress_distribution, load, boundary_dofs):
+    def forward(self, stress_distribution, load, boundary_dofs, volume_fraction):
 
         # flatten all patches and append to x
         patches = torch.zeros(self.n_patches, self.patch_size)
@@ -108,8 +110,8 @@ class ViT(torch.nn.Module):
         
         x = torch.zeros(1 + self.n_patches, EMBEDDING_DIMS, dtype=torch.float32, requires_grad=True)
         
-        # embedding of loads and bc
-        x[0, :] = self.linear_bcs(load_and_bc(load, boundary_dofs))
+        # embedding of parameters (load, boundary conditions, volume fraction)
+        x[0, :] = self.linear_param(params_vectors(load, boundary_dofs, volume_fraction))
         
         # embedding of patches
         x[1::, :] = self.linear_embed(patches)
@@ -137,4 +139,3 @@ class ViT(torch.nn.Module):
             # todo: fill in the density matrix with the corresponding patch
         
         return density
-        
