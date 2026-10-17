@@ -2,6 +2,7 @@ import torch
 from torch.utils.data import Dataset
 import numpy as np
 from pathlib import Path
+from enum import StrEnum
 
 LABELED_DATA_DIR_PATH = Path(__file__).parent.parent / "data/labeled_data/"
 
@@ -17,12 +18,12 @@ def _idx_to_coordinates(idx, normalize=False):
     (0, 1)
     """
     
-    row = idx // 65 # 65 nodes per row
-    col = idx % 65
+    x = idx // 65 # 65 nodes per row
+    y = idx % 65
     if normalize:
-        return col / 64, row / 64
+        return x / 64, y / 64
     else:
-        return col, row
+        return x, y
 
 def params_vectors(load, fixed_dofs, volume_fraction):
     """Returns a representation of the load, the boundary conditions and the volume fraction
@@ -60,16 +61,40 @@ def params_vectors(load, fixed_dofs, volume_fraction):
 
     return torch.cat([torch.tensor([volume_fraction]), loads, bc])
 
-class TOTrainDataset(Dataset):
-    def __init__(self):
-        training_dir = Path(LABELED_DATA_DIR_PATH / "train")
-        densities = np.load(training_dir / "density_train.npy")
-        fixed_dofs = np.load(training_dir / "fixed_dof_train.npy")
-        loads = np.load(training_dir / "load_train.npy")
-        # strain_energy_densities = np.load(training_dir / "strain_energy_density_train.npy")
-        stresses = np.load(training_dir / "stress_train.npy")
-        volume_fractions = np.load(training_dir / "volume_fraction_train.npy")
+
+class Mode(StrEnum):
+    TRAIN = "train"
+    VALIDATE = "validate"
+    TEST = "test"
+
+class TODataset(Dataset):
+    def __init__(self, mode: Mode):
         
+        
+        dir = Path(LABELED_DATA_DIR_PATH / mode)
+        
+        if mode == Mode.TRAIN:
+            densities = torch.as_tensor(np.load(dir / "density_train.npy"))
+            fixed_dofs = torch.as_tensor(np.load(dir / "fixed_dof_train.npy"))
+            loads = torch.as_tensor(np.load(dir / "load_train.npy"))
+            # strain_energy_densities = torch.as_tensor(np.load(training_dir / "strain_energy_density_train.npy"))
+            stresses = torch.as_tensor(np.load(dir / "stress_train.npy"))
+            volume_fractions = torch.as_tensor(np.load(dir / "volume_fraction_train.npy"))
+        elif mode == Mode.VALIDATE:
+            densities = torch.as_tensor(np.load(dir / "density_val.npy"))
+            fixed_dofs = torch.as_tensor(np.load(dir / "fixed_dof_val.npy"))
+            loads = torch.as_tensor(np.load(dir / "load_val.npy"))
+            # strain_energy_densities = torch.as_tensor(np.load(training_dir / "strain_energy_density_val.npy"))
+            stresses = torch.as_tensor(np.load(dir / "stress_val.npy"))
+            volume_fractions = torch.as_tensor(np.load(dir / "volume_fraction_val.npy"))
+        elif mode == Mode.TEST:
+            densities = torch.as_tensor(np.load(dir / "density_test.npy"))
+            fixed_dofs = torch.as_tensor(np.load(dir / "fixed_dof_test.npy"))
+            loads = torch.as_tensor(np.load(dir / "load_test.npy"))
+            # strain_energy_densities = torch.as_tensor(np.load(training_dir / "strain_energy_density_test.npy"))
+            stresses = torch.as_tensor(np.load(dir / "stress_test.npy"))
+            volume_fractions = torch.as_tensor(np.load(dir / "volume_fraction_test.npy"))
+
         
         self.n_samples = densities.shape[0]
         n_elements = 64*64
@@ -78,9 +103,10 @@ class TOTrainDataset(Dataset):
         
         
         # organize the data into samples
-        params = torch.tensor(
-            [params_vectors(loads[i], fixed_dofs[i], volume_fractions[i]) for i in range(len(loads))]
-        ) # len 1 + 4 + 4*64 = 261
+        params = torch.stack([
+            params_vectors(loads[i], fixed_dofs[i], volume_fractions[i]) 
+            for i in range(self.n_samples)
+        ]) 
         
         
         
