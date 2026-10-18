@@ -109,13 +109,17 @@ def make_loss(loss_name: str):
     else:
         raise ValueError(f"Unsupported loss function: {loss_name}")
 
-def train(model: torch.nn.Module, dataloader: DataLoader, optimizer: torch.optim.Optimizer, loss_fn):
+def train(model: torch.nn.Module, dataloader: DataLoader, optimizer: torch.optim.Optimizer, loss_fn, device):
     model.train() # set to training mode
     
     n_samples = 0
     total_loss = 0
     
     for x, y in dataloader:
+        
+        x = x.to(device)
+        y = y.to(device)
+        
         pred = model(x)
         loss = loss_fn(pred, y)
         
@@ -129,13 +133,16 @@ def train(model: torch.nn.Module, dataloader: DataLoader, optimizer: torch.optim
         
     return total_loss / n_samples
 
-def validate(model: torch.nn.Module, dataloader: DataLoader, loss_fn):
+def validate(model: torch.nn.Module, dataloader: DataLoader, loss_fn, device):
     model.eval() # set to evaluation mode
     
     n_samples = 0
     total_loss = 0
     
     for x, y in dataloader:
+        x = x.to(device)
+        y = y.to(device)
+
         pred = model(x)
         loss = loss_fn(pred, y)
         
@@ -145,6 +152,8 @@ def validate(model: torch.nn.Module, dataloader: DataLoader, loss_fn):
     return total_loss / n_samples
 
 def optimize(checkpoint: Checkpoint):
+    device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
+    logging.info(f"Using device: {device}")
     
     # prepare data loaders, loss function, model, and optimizer
     train_dataloader = DataLoader(
@@ -165,7 +174,7 @@ def optimize(checkpoint: Checkpoint):
         query_dims=checkpoint.params.query_dims,
         n_attention_blocks=checkpoint.params.n_attention_blocks,
         n_attention_heads=checkpoint.params.n_attention_heads,
-    )
+    ).to(device)
     logging.info(f"Initialized ViT model with embedding_dims={checkpoint.params.embedding_dims}, query_dims={checkpoint.params.query_dims}, n_attention_blocks={checkpoint.params.n_attention_blocks}, n_attention_heads={checkpoint.params.n_attention_heads}, n_parameters={vit.n_weights}")
     if checkpoint.model_state_dict is not None:
         logging.info(f"Loading model state from checkpoint: {checkpoint.path}")
@@ -200,8 +209,8 @@ def optimize(checkpoint: Checkpoint):
     start_epoch = len(train_losses)
     for epoch in range(start_epoch + 1, checkpoint.params.n_epochs + 1):
         
-        train_loss = train(vit, train_dataloader, optimizer, loss_fn)
-        validation_loss = validate(vit, validate_dataloader, loss_fn)
+        train_loss = train(vit, train_dataloader, optimizer, loss_fn, device)
+        validation_loss = validate(vit, validate_dataloader, loss_fn, device)
         
         # store training history for reporting
         train_losses.append(train_loss)
