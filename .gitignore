@@ -2,3 +2,5 @@ topopt_data.csv
 */__pycache__/
 *.npy
 *.npz
+*.pth
+*.pt
