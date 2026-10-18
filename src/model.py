@@ -72,7 +72,12 @@ class ViT(torch.nn.Module):
             embedding_dims,
             query_dims,
             n_attention_blocks,
+            n_attention_heads,
         ):
+        
+        assert embedding_dims % n_attention_heads == 0, "Embedding dimensions must be divisible by the number of attention heads"
+        assert query_dims % n_attention_heads == 0, "Query dimensions must be divisible by the number of attention heads"
+        
         super(ViT, self).__init__()
         
         # create seed for reproducibility
@@ -82,9 +87,13 @@ class ViT(torch.nn.Module):
         self.embedding_dims = embedding_dims
         self.query_dims = query_dims
         self.n_attention_blocks = n_attention_blocks
+        self.n_attention_heads = n_attention_heads
         
         self.n_patches = 8*8 # 8x8 image patches -> 8*8 = 64 patch in 64x64 grid
         self.patch_size = 8*8
+        
+        self.embedding_dims_head = self.embedding_dims // self.n_attention_heads
+        self.query_dims_head = self.query_dims // self.n_attention_heads
         
         # input and output
         self.linear_patch = nn.Linear(self.patch_size, self.embedding_dims)
@@ -92,10 +101,15 @@ class ViT(torch.nn.Module):
         self.readout = nn.Linear(self.n_patches*self.embedding_dims + self.embedding_dims, self.n_patches*self.patch_size) # get the whole optimized topology at once
         
         # attention stuff
-        self.linear_v = nn.Linear(self.embedding_dims, self.embedding_dims)
-        self.linear_q = nn.Linear(self.embedding_dims, self.query_dims)
-        self.linear_k = nn.Linear(self.embedding_dims, self.query_dims)
-        self.linear = nn.Linear(self.embedding_dims, self.embedding_dims)
+        self.linear_vs = []
+        self.linear_qs = []
+        self.linear_ks = []
+        self.linears = []
+        for block in range(self.n_attention_blocks): # create separate linear layers for each attention block
+            self.linear_vs.append(nn.Linear(self.embedding_dims, self.embedding_dims))
+            self.linear_qs.append(nn.Linear(self.embedding_dims, self.query_dims))
+            self.linear_ks.append(nn.Linear(self.embedding_dims, self.query_dims))
+            self.linears.append(nn.Linear(self.embedding_dims, self.embedding_dims))
         
         self.n_weights = sum(p.numel() for p in self.parameters() if p.requires_grad) # total number of trainable parameters
                 
@@ -128,14 +142,21 @@ class ViT(torch.nn.Module):
         
         for i in range(self.n_attention_blocks):
             
-            # attention block
-            v = self.linear_v(embeddings)
-            q = self.linear_q(embeddings)
-            k = self.linear_k(embeddings)
-            embeddings = attention(k, q, v)
+            k = self.linear_ks[i](embeddings)
+            q = self.linear_qs[i](embeddings)
+            v = self.linear_vs[i](embeddings)
             
-            # linear layer after attention
-            embeddings = self.linear(embeddings)
+            embeddings_head = []
+            for head_idx in range(self.n_attention_heads): # multi-head attention
+
+                embeddings_head.append(attention(
+                    k[:, :, head_idx * self.query_dims_head:(head_idx + 1) * self.query_dims_head],
+                    q[:, :, head_idx * self.query_dims_head:(head_idx + 1) * self.query_dims_head],
+                    v[:, :, head_idx * self.embedding_dims_head:(head_idx + 1) * self.embedding_dims_head]
+                ))
+
+
+            embeddings = self.linears[i](torch.cat(embeddings_head, dim=-1))
         
         # readout
         res = self.readout(embeddings.flatten(start_dim=1)) # flatten again for the readout
@@ -145,5 +166,5 @@ class ViT(torch.nn.Module):
     
     def name(self):
         """Defines a name based on the hyperparameters of the model."""
-        return f"ViT_{self.n_weights}_{self.embedding_dims}_{self.query_dims}_{self.n_attention_blocks}"
+        return f"ViT_{self.n_weights}_{self.embedding_dims}_{self.query_dims}_{self.n_attention_blocks}_{self.n_attention_heads}"
     

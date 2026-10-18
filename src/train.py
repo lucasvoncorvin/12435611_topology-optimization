@@ -19,7 +19,7 @@ class Hyperparameters:
     embedding_dims: int
     query_dims: int
     n_attention_blocks: int
-    # n_attention_heads: int
+    n_attention_heads: int
     optimizer: str
     learning_rate: float
     loss: str
@@ -163,9 +163,10 @@ def optimize(checkpoint: Checkpoint):
     vit = ViT(
         embedding_dims=checkpoint.params.embedding_dims,
         query_dims=checkpoint.params.query_dims,
-        n_attention_blocks=checkpoint.params.n_attention_blocks
+        n_attention_blocks=checkpoint.params.n_attention_blocks,
+        n_attention_heads=checkpoint.params.n_attention_heads,
     )
-    logging.info(f"Initialized ViT model with embedding_dims={checkpoint.params.embedding_dims}, query_dims={checkpoint.params.query_dims}, n_attention_blocks={checkpoint.params.n_attention_blocks}, n_parameters={vit.n_weights}")
+    logging.info(f"Initialized ViT model with embedding_dims={checkpoint.params.embedding_dims}, query_dims={checkpoint.params.query_dims}, n_attention_blocks={checkpoint.params.n_attention_blocks}, n_attention_heads={checkpoint.params.n_attention_heads}, n_parameters={vit.n_weights}")
     if checkpoint.model_state_dict is not None:
         logging.info(f"Loading model state from checkpoint: {checkpoint.path}")
         vit.load_state_dict(checkpoint.model_state_dict)
@@ -257,9 +258,9 @@ def optimize(checkpoint: Checkpoint):
 
 if __name__ == "__main__":
     
-    n_epochs = 2000
+    n_epochs = 1000
     
-    checkpoint_file = Path("models/ViT_1070424_4_2_1/adam_0.001_mse/epoch_1000.pth") # None
+    checkpoint_file = None # Path("models/ViT_1070424_4_2_1/adam_0.001_mse/epoch_1000.pth") # None
 
     if checkpoint_file is not None:
         if not checkpoint_file.exists():
@@ -277,6 +278,7 @@ if __name__ == "__main__":
             embedding_dims=4,
             query_dims=2,
             n_attention_blocks=1,
+            n_attention_heads=2,
             optimizer="adam",
             learning_rate=0.001,
             loss="mse"

@@ -4,3 +4,4 @@ topopt_data.csv
 *.npz
 *.pth
 *.pt
+*.png
