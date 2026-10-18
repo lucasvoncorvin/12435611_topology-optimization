@@ -2,9 +2,6 @@ import torch
 import torch.nn as nn
 import math
 
-EMBEDDING_DIMS = 16
-QUERY_DIMS = 8
-N_ATTENTION_BLOCKS = 4
 
 def _idx_to_coordinates(idx, normalize=False):
     """translate a node index to its (normalized) coordinates within the grid"""
@@ -33,53 +30,75 @@ def attention(keys, queries, values):
 
 
 
-def _positional_encoding(position, d_model=EMBEDDING_DIMS//2):
-    """Generates a frequency-based positional encoding for a given position and dimension"""
-    pe = torch.zeros(d_model)
+def _positional_encoding(position, dim_encoding):
+    """Generates a frequency-based positional encoding for a given position and dimension
+    
+    Args:
+        position (int): The position for which to generate the encoding.
+        dim_encoding (int): The dimension of the positional encoding.
+
+    Returns:
+        torch.Tensor: Positional encoding vector of shape (dim_encoding,)
+    """
+    pe = torch.zeros(dim_encoding)
     N = 10000
     
-    for k in range(0, d_model, 2):
-        pe[k] = math.sin(position / (N ** (k / d_model)))
-        pe[k+1] = math.cos(position / (N ** (k / d_model)))
+    for k in range(0, dim_encoding, 2):
+        pe[k] = math.sin(position / (N ** (k / dim_encoding)))
+        pe[k+1] = math.cos(position / (N ** (k / dim_encoding)))
     return pe
     
 
-def add_positional_encoding(patches):
+def add_positional_encoding(patches, embedding_dims):
     """Adds frequency-based positional encoding to the patch embeddings in place.
     
     Args:
         patches: Tensor of shape (batch_size, n_patches, patch_size)
     """
     
-    assert EMBEDDING_DIMS % 2 == 0, "Embedding dimensions must be even for positional encoding"
+    assert embedding_dims % 2 == 0, "Embedding dimensions must be even for positional encoding"
     
     for k in range(patches.shape[1]):
         row = k // 8
         col = k % 8
-        patches[:, k, 0:EMBEDDING_DIMS//2] += _positional_encoding(row)
-        patches[:,k, EMBEDDING_DIMS//2:EMBEDDING_DIMS] += _positional_encoding(col)
+        patches[:, k, 0:embedding_dims//2] += _positional_encoding(row, embedding_dims//2)
+        patches[:,k, embedding_dims//2:embedding_dims] += _positional_encoding(col, embedding_dims//2)
             
 
 
 class ViT(torch.nn.Module):
-    def __init__(self):
+    def __init__(
+            self,
+            embedding_dims,
+            query_dims,
+            n_attention_blocks,
+        ):
         super(ViT, self).__init__()
+        
+        # create seed for reproducibility
+        torch.manual_seed(42)
+        
+        # hyperparameters
+        self.embedding_dims = embedding_dims
+        self.query_dims = query_dims
+        self.n_attention_blocks = n_attention_blocks
         
         self.n_patches = 8*8 # 8x8 image patches -> 8*8 = 64 patch in 64x64 grid
         self.patch_size = 8*8
         
         # input and output
-        self.linear_patch = nn.Linear(self.patch_size, EMBEDDING_DIMS)
-        self.linear_param = nn.Linear(1+4+4*64, EMBEDDING_DIMS) # dimension of the parameter vector
-        self.readout = nn.Linear(self.n_patches*EMBEDDING_DIMS + EMBEDDING_DIMS, self.n_patches*self.patch_size) # get the whole optimized topology at once
+        self.linear_patch = nn.Linear(self.patch_size, self.embedding_dims)
+        self.linear_param = nn.Linear(1+4+4*64, self.embedding_dims) # dimension of the parameter vector
+        self.readout = nn.Linear(self.n_patches*self.embedding_dims + self.embedding_dims, self.n_patches*self.patch_size) # get the whole optimized topology at once
         
         # attention stuff
-        self.linear_v = nn.Linear(EMBEDDING_DIMS, EMBEDDING_DIMS)
-        self.linear_q = nn.Linear(EMBEDDING_DIMS, QUERY_DIMS)
-        self.linear_k = nn.Linear(EMBEDDING_DIMS, QUERY_DIMS)
-        self.linear = nn.Linear(EMBEDDING_DIMS, EMBEDDING_DIMS)
+        self.linear_v = nn.Linear(self.embedding_dims, self.embedding_dims)
+        self.linear_q = nn.Linear(self.embedding_dims, self.query_dims)
+        self.linear_k = nn.Linear(self.embedding_dims, self.query_dims)
+        self.linear = nn.Linear(self.embedding_dims, self.embedding_dims)
         
-        
+        self.n_weights = sum(p.numel() for p in self.parameters() if p.requires_grad) # total number of trainable parameters
+                
         
     def forward(self, x):
         """Forward pass of the Vision Transformer.
@@ -103,11 +122,11 @@ class ViT(torch.nn.Module):
         
         # embedding of patches
         patch_embeddings = self.linear_patch(patches)
-        add_positional_encoding(patch_embeddings) # adds positional encoding to the patch embeddings
+        add_positional_encoding(patch_embeddings, self.embedding_dims) # adds positional encoding to the patch embeddings
         
         embeddings = torch.cat([param_embeddings, patch_embeddings], dim=1)
         
-        for i in range(N_ATTENTION_BLOCKS):
+        for i in range(self.n_attention_blocks):
             
             # attention block
             v = self.linear_v(embeddings)
@@ -122,3 +141,9 @@ class ViT(torch.nn.Module):
         res = self.readout(embeddings.flatten(start_dim=1)) # flatten again for the readout
         
         return res
+    
+    
+    def name(self):
+        """Defines a name based on the hyperparameters of the model."""
+        return f"ViT_{self.n_weights}_{self.embedding_dims}_{self.query_dims}_{self.n_attention_blocks}"
+    
