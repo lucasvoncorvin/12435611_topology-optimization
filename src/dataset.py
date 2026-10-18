@@ -76,7 +76,7 @@ class Mode(StrEnum):
 class TODataset(Dataset):
     def __init__(self, mode: Mode):
         
-        logger.debug(f"Initializing Dataset with mode {mode}")
+        logger.info(f"Initializing Dataset with mode {mode}")
         
         
         dir = Path(LABELED_DATA_DIR_PATH / mode)
@@ -94,7 +94,7 @@ class TODataset(Dataset):
         n_patches = 8*8
         n_elements_per_patch = 8*8
         
-        logger.debug(f"Dataset: n_samples {self.n_samples}")
+        logger.info(f"Dataset: n_samples {self.n_samples}")
         
         
         # organize the data into samples
@@ -133,7 +133,7 @@ class TODataset(Dataset):
         # the first 1+4+4*64 = 261 elements correspond to the params, the rest to the stress samples of size n_patches*n_elements_per_patch
         self.x = torch.cat([params, stress_samples], dim=1)
         
-        logger.debug("Dataset initialized succesfully")
+        logger.info("Dataset initialized succesfully")
         
 
     def __len__(self):
