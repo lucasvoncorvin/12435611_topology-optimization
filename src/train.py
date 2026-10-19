@@ -1,5 +1,8 @@
-from model import ViT
-from dataset import TODataset, Mode
+from time import time
+
+from .model import ViT
+from .dataset import TODataset, Mode
+from .loss import CustomLoss
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -72,10 +75,10 @@ def save_checkpoint(checkpoint: Checkpoint, plot: bool = False):
     if plot:
         plot_training_history(checkpoint.results.train_losses, checkpoint.results.validation_losses, path=checkpoint.path.with_suffix(".png"), show=False)
     
-def load_checkpoint(filepath: Path) -> Checkpoint:
+def load_checkpoint(filepath: Path, device = "cpu") -> Checkpoint:
     # if model is checkpoint, load the checkpoint data
     logging.info(f"Loading checkpoint from {filepath}")
-    checkpoint_data = torch.load(filepath)
+    checkpoint_data = torch.load(filepath, map_location=device)
     checkpoint = Checkpoint(
         path=filepath,
         model_state_dict=checkpoint_data["model_state_dict"],
@@ -101,11 +104,19 @@ def make_loss(loss_name: str):
     returns the corresponding loss function class based on the loss_name provided.
     """
     if loss_name == "mse":
-        return nn.MSELoss
+        return nn.MSELoss()
     if loss_name == "l1":
         return nn.L1Loss()
     if loss_name == "cross_entropy":
         return nn.CrossEntropyLoss()
+    if loss_name == "kl_divergence":
+        return nn.KLDivLoss()
+    if loss_name == "bce":
+        return nn.BCELoss()
+    if loss_name == "custom_mse":
+        return CustomLoss(base_loss_fn=nn.MSELoss())
+    if loss_name == "custom_bce":
+        return CustomLoss(base_loss_fn=nn.BCELoss())
     else:
         raise ValueError(f"Unsupported loss function: {loss_name}")
 
@@ -121,7 +132,12 @@ def train(model: torch.nn.Module, dataloader: DataLoader, optimizer: torch.optim
         y = y.to(device)
         
         pred = model(x)
-        loss = loss_fn(pred, y)
+        if isinstance(loss_fn, CustomLoss):
+            load = x[:, 1:5]
+            target_volume_fraction = x[:, 0]
+            loss = loss_fn(pred, y, load, target_volume_fraction)
+        else:
+            loss = loss_fn(pred, y)
         
         loss.backward()
         optimizer.step()
@@ -139,15 +155,21 @@ def validate(model: torch.nn.Module, dataloader: DataLoader, loss_fn, device):
     n_samples = 0
     total_loss = 0
     
-    for x, y in dataloader:
-        x = x.to(device)
-        y = y.to(device)
+    with torch.no_grad():
+        for x, y in dataloader:
+            x = x.to(device)
+            y = y.to(device)
 
-        pred = model(x)
-        loss = loss_fn(pred, y)
-        
-        n_samples += x.shape[0]
-        total_loss += loss.item() * x.shape[0]
+            pred = model(x)
+            if isinstance(loss_fn, CustomLoss):
+                load = x[:, 1:5]
+                target_volume_fraction = x[:, 0]
+                loss = loss_fn(pred, y, load, target_volume_fraction)
+            else:
+                loss = loss_fn(pred, y)
+            
+            n_samples += x.shape[0]
+            total_loss += loss.item() * x.shape[0]
         
     return total_loss / n_samples
 
@@ -164,7 +186,7 @@ def optimize(checkpoint: Checkpoint):
         dataset=TODataset(Mode.VALIDATE),
         batch_size=256
     )
-    loss_fn = make_loss(checkpoint.params.loss)()
+    loss_fn = make_loss(checkpoint.params.loss)
     
     
     
@@ -208,6 +230,7 @@ def optimize(checkpoint: Checkpoint):
     # optimization loop
     start_epoch = len(train_losses)
     for epoch in range(start_epoch + 1, checkpoint.params.n_epochs + 1):
+        start_time = time()
         
         train_loss = train(vit, train_dataloader, optimizer, loss_fn, device)
         validation_loss = validate(vit, validate_dataloader, loss_fn, device)
@@ -216,7 +239,7 @@ def optimize(checkpoint: Checkpoint):
         train_losses.append(train_loss)
         validation_losses.append(validation_loss)
         
-        logger.info(f"Epoch: {epoch} | Train Loss: {train_loss:.3f} | Validation Loss {validation_loss:.3f} | Delta {validation_loss-train_loss:.3f}")
+        logger.info(f"Epoch: {epoch} | Time: {time() - start_time:.2f}s | Train Loss: {train_loss:.5f} | Validation Loss {validation_loss:.5f} | Delta {validation_loss-train_loss:.5f}")
         
         if epoch % 10 == 0:  # save checkpoint every 10 epochs
             
@@ -237,13 +260,13 @@ def optimize(checkpoint: Checkpoint):
                     epoch_num = int(file.stem.split("_")[1])
                     if epoch_num % 100 != 0:
                         file.unlink()
-            if epoch % 1000 == 0:
-                logger.info(f"Deleting previous checkpoints that are not multiples of 1000")
-                # delete previous checkpoints that are not multiples of 1000
-                for file in training_subdir.glob("epoch_*.pth"):
-                    epoch_num = int(file.stem.split("_")[1])
-                    if epoch_num % 1000 != 0:
-                        file.unlink()
+            # if epoch % 1000 == 0:
+            #     logger.info(f"Deleting previous checkpoints that are not multiples of 1000")
+            #     # delete previous checkpoints that are not multiples of 1000
+            #     for file in training_subdir.glob("epoch_*.pth"):
+            #         epoch_num = int(file.stem.split("_")[1])
+            #         if epoch_num % 1000 != 0:
+            #             file.unlink()
             
             save_checkpoint(checkpoint)
         
@@ -277,7 +300,7 @@ if __name__ == "__main__":
         checkpoint = load_checkpoint(checkpoint_file)
         checkpoint.params.n_epochs = n_epochs
         start_epoch = len(checkpoint.results.train_losses) if checkpoint.results is not None else 0
-        print(f"Resuming training from epoch {start_epoch}")
+        logger.info(f"Resuming training from epoch {start_epoch}")
         assert start_epoch < checkpoint.params.n_epochs
         
     else:
@@ -290,7 +313,7 @@ if __name__ == "__main__":
             n_attention_heads=2,
             optimizer="adam",
             learning_rate=0.001,
-            loss="mse"
+            loss="custom_mse"
         )
         checkpoint = Checkpoint(
             path=None,
