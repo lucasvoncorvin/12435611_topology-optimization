@@ -166,7 +166,7 @@ class ViT(torch.nn.Module):
         # readout
         res = self.readout(embeddings.flatten(start_dim=1)) # flatten again for the readout
         
-        return res
+        return torch.sigmoid(res) # sigmoid to map result to the range [0, 1]
     
     
     def name(self):
