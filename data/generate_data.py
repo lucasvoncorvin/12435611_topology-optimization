@@ -1,6 +1,7 @@
 import csv
 import os
 from functools import partial
+from itertools import combinations
 from multiprocessing import Pool
 from typing import Any, Callable, Tuple
 from time import time
@@ -24,7 +25,10 @@ N_PROCESSES = 6
 
 def generate_data():
     
-    n_samples = 10000
+    n_samples = 30000
+    
+    # build catalog of possible boundary conditions once in the beginning
+    bc_catalog = _build_bc_catalog()
     
     # set output directory and file for storing generated data
     output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "raw_data")
@@ -52,7 +56,7 @@ def generate_data():
     
     # samples are computed in parallel worker processes; only this (main) process writes to the csv
     with Pool(processes=N_PROCESSES) as pool:
-        for i, (row, optimization_time, fem_time) in enumerate(pool.imap_unordered(partial(_generate_sample_safe, output_file=output_file), seeds)):
+        for i, (row, optimization_time, fem_time) in enumerate(pool.imap_unordered(partial(_generate_sample_safe, output_file=output_file, bc_catalog=bc_catalog), seeds)):
             # a failed sample (e.g. MemoryError) is skipped and logged instead of aborting the whole run
             if row is None:
                 print(f"Sample {i+1}/{n_samples} FAILED and was skipped (seed {optimization_time}): {fem_time}")
@@ -66,19 +70,19 @@ def generate_data():
             print(f"Sample {i+1}/{n_samples} generated in {optimization_time + fem_time:.2f} seconds. (Optimization: {optimization_time:.2f}, FEM: {fem_time:.2f})")
     #!####
 
-def _generate_sample_safe(seed, output_file):
+def _generate_sample_safe(seed, output_file, bc_catalog):
     # I ran out of RAM some times, so this wrapper ensures that the whole process doesn't crash and logs the error instead
     try:
-        return _generate_sample(seed, output_file)
+        return _generate_sample(seed, output_file, bc_catalog)
     except Exception as e:
         return None, seed, f"{type(e).__name__}: {e}"
 
-def _generate_sample(seed, output_file):
+def _generate_sample(seed, output_file, bc_catalog):
     np.random.seed(seed)
     start_time = time()
     
     # get random parameters
-    fixed_dofs, fixed_nodes = _sample_fixed_dofs()
+    fixed_dofs, fixed_nodes = _sample_fixed_dofs(bc_catalog)
     f, load_node = _sample_f(fixed_nodes)
     bcs = _get_bcs(f, fixed_dofs)
     volfrac = _sample_volfrac()
@@ -128,23 +132,20 @@ def _sample_f(fixed_nodes):
     
     return f, selected_node
     
-def _sample_fixed_dofs() -> tuple[list[int], set[int]]:
-    """
-    Return a list with the indices of the fixed degrees of freedom based on randomly sampled boundary conditions.
-    """
+def _build_bc_catalog() -> list:   
     
-    n_bcs = np.random.randint(1, 5)  # example range for number of boundary conditions
-    
-    # topoptlab numbers nodes column-wise: node = EDGE_LENGTH * x + y,
-    # with x from left (0) to right and y from top (0) to bottom
-    def node(x: int, y: int) -> int:
-        return EDGE_LENGTH * x + y
-
     last = EDGE_LENGTH - 1
     mid = EDGE_LENGTH // 2
     first_half = range(mid)  # 0 .. mid - 1
     second_half = range(mid, EDGE_LENGTH)  # mid .. last
 
+
+    # topoptlab numbers nodes column-wise: node = EDGE_LENGTH * x + y,
+    # with x from left (0) to right and y from top (0) to bottom
+    def node(x: int, y: int) -> int:
+            return EDGE_LENGTH * x + y
+    
+    
     # possible fixed nodes
     top_left_point = [node(0, 0), node(1, 0)] # two nodes, to avoid rotational dof
     top_middle_point = [node(mid, 0), node(mid - 1, 0)] # use both middle point
@@ -168,6 +169,8 @@ def _sample_fixed_dofs() -> tuple[list[int], set[int]]:
     right_edge = right_top_edge + right_bottom_edge
     
     
+    
+    # create mapping for sampling
     bc_mapping = {
         1: top_left_point,
         2: top_middle_point,
@@ -190,18 +193,37 @@ def _sample_fixed_dofs() -> tuple[list[int], set[int]]:
         19: left_edge,
         20: right_edge
     }
-
-    # note: dof index = 2 * node index for x displacement, 2 * node index + 1 for y displacement 
     
+    # create a catalog of all possible combinations of boundary conditions
+    bc_catalog = set()
+    for n_boundary_conditions in range(1, 5):
+        for combination in combinations(bc_mapping.keys(), n_boundary_conditions):
+            fixed_nodes = set()
+            for bc_idx in combination:
+                fixed_nodes.update(bc_mapping[bc_idx])
+            bc_catalog.add(tuple(sorted(fixed_nodes)))
+
+    
+    # exclude combination where all sides are fully fixed
+    bc_catalog = bc_catalog - {tuple(sorted(top_edge + bottom_edge + left_edge + right_edge))}
+    
+    return sorted(bc_catalog)
+
+def _sample_fixed_dofs(bc_catalog: list) -> tuple[list[int], set[int]]:
+    """
+    Return a list with the indices of the fixed degrees of freedom based on randomly sampled boundary conditions.
+    """
+    
+    # note: dof index = 2 * node index for x displacement, 2 * node index + 1 for y displacement 
+
+    # sample from the boundary condition catalog
     fixed_dofs = set()
     fixed_nodes = set()
-    for i in range(n_bcs):
-        # we dont care about overlapping boundary conditions
-        bc_idx = np.random.randint(1, 21)
-        bc = bc_mapping[bc_idx]
-        fixed_dofs.update([2 * node for node in bc]) # x
-        fixed_dofs.update([2 * node + 1 for node in bc]) # y
-        fixed_nodes.update(bc)
+    bc_idx = np.random.randint(0, len(bc_catalog))
+    bc = bc_catalog[bc_idx]
+    fixed_dofs.update([2 * node for node in bc]) # x
+    fixed_dofs.update([2 * node + 1 for node in bc]) # y
+    fixed_nodes.update(bc)
     
     fixed_dofs = list(fixed_dofs)  # convert set to list for further processing
     
