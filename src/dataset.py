@@ -36,9 +36,10 @@ class TODataset(Dataset):
         
         self.n_samples = densities.shape[0]
         self.angles = torch.zeros(self.n_samples, dtype=torch.int)
+        self.patch_size = patch_size
         n_elements = 64*64
-        n_patches = (64//patch_size) * (64//patch_size)
-        n_elements_per_patch = patch_size**2
+        n_patches = (64//self.patch_size) * (64//self.patch_size)
+        n_elements_per_patch = self.patch_size**2
         
         logger.info(f"Dataset: n_samples {self.n_samples}")
         
@@ -69,14 +70,14 @@ class TODataset(Dataset):
         for sample_idx in range(self.n_samples):
             n_params = params.shape[1]
             oriented_samples[sample_idx, n_params:] = patchify(
-                oriented_samples[sample_idx, n_params:].reshape(64, 64), patch_size
+                oriented_samples[sample_idx, n_params:].reshape(64, 64), self.patch_size
             )
-            # strain_energy_patches[sample_idx] = patchify(strain_energy_densities[sample_idx], patch_size)
+            # strain_energy_patches[sample_idx] = patchify(strain_energy_densities[sample_idx], self.patch_size)
             self.y[sample_idx] = patchify(
                 densities[sample_idx]
                 .reshape(64, 64)
                 .rot90(k=self.angles[sample_idx], dims=(0, 1)), 
-                patch_size
+                self.patch_size
             ).flatten()
         
         self.x = oriented_samples

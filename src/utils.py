@@ -48,7 +48,7 @@ def reshape_distribution(distribution):
     raise ValueError("distribution must be either a flattened (64*64,) array or a (64, 64) array.")
 
 #! this function was created by ai to help me visualize the results
-def visualize(true_density, predicted_density, load=None, bcs=None, volume_fraction=None):
+def visualize(true_density, predicted_density, load=None, bcs_one_hot=None, volume_fraction=None):
     """Compare true and predicted densities and return (figure, axes).
 
     Both densities must be patch-ordered vectors of shape (4096,) or (1, 4096).
@@ -56,7 +56,7 @@ def visualize(true_density, predicted_density, load=None, bcs=None, volume_fract
     matching the dataset and model outputs. axes contains the true and
     predicted panels, respectively.
     load is [x_normalized, y_normalized, fx, fy], with coordinates in [0, 1].
-    bcs is the dataset's 256-entry binary boundary mask, ordered by increasing
+    bcs_one_hot is the dataset's 256-entry binary boundary mask, ordered by increasing
     node index along the perimeter; 1 fixes both displacement components.
     volume_fraction is an optional scalar target in [0, 1]. Panel titles show
     the actual mean density; the figure title shows the target when supplied.
@@ -76,16 +76,16 @@ def visualize(true_density, predicted_density, load=None, bcs=None, volume_fract
         densities.append(unpatchify(torch.as_tensor(density), patch_size=8).numpy())
 
     fixed_nodes = np.empty(0, dtype=np.int64)
-    if bcs is not None:
-        boundary_mask = to_numpy(bcs)
+    if bcs_one_hot is not None:
+        boundary_mask_one_hot = to_numpy(bcs_one_hot)
         if (
-            boundary_mask.shape != (256,)
-            or not np.isfinite(boundary_mask).all()
-            or not np.isin(boundary_mask, (0, 1)).all()
+            boundary_mask_one_hot.shape != (256,)
+            or not np.isfinite(boundary_mask_one_hot).all()
+            or not np.isin(boundary_mask_one_hot, (0, 1)).all()
         ):
-            raise ValueError("bcs must be the dataset's binary boundary mask of shape (256,).")
+            raise ValueError("bcs_one_hot must be the dataset's binary boundary mask of shape (256,).")
         boundary_nodes = np.asarray(boundary_node_indices())
-        fixed_nodes = boundary_nodes[boundary_mask == 1]
+        fixed_nodes = boundary_nodes[boundary_mask_one_hot == 1]
 
     if load is not None:
         load = to_numpy(load)
@@ -150,6 +150,18 @@ def visualize(true_density, predicted_density, load=None, bcs=None, volume_fract
     return fig, axes
 
 
+def un_one_hot_encode(fixed_dofs_one_hot: torch.Tensor) -> torch.Tensor:
+    """Decode the 256 boundary-node flags into fixed FEM degree-of-freedom indices."""
+    if fixed_dofs_one_hot.shape != (4 * 64,):
+        raise ValueError("Expected a boundary-node mask with shape (256,)")
+    if not torch.all((fixed_dofs_one_hot == 0) | (fixed_dofs_one_hot == 1)):
+        raise ValueError("Boundary-node flags must be either 0 or 1")
+    boundary_nodes = torch.tensor(
+        boundary_node_indices(), dtype=torch.long, device=fixed_dofs_one_hot.device
+    )
+    fixed_nodes = boundary_nodes[fixed_dofs_one_hot.bool()]
+    return torch.stack((2 * fixed_nodes, 2 * fixed_nodes + 1), dim=1).reshape(-1)
+
 def patchify(image: torch.Tensor, patch_size: int) -> torch.Tensor:
     """Flatten images into consecutive patches, preserving leading dimensions."""
     if image.shape[-2:] != (64, 64):
@@ -208,7 +220,7 @@ def rotate_sample(sample: torch.Tensor) -> torch.Tensor:
 
 
     # Boundary flags follow the parameter vector's node-index order, not perimeter order.
-    fixed_nodes = sample[5:5 + 4 * 64]
+    fixed_nodes_one_hot = sample[5:5 + 4 * 64]
     boundary_nodes = boundary_node_indices()
     boundary_positions = {node: index for index, node in enumerate(boundary_nodes)}
     destination_indices = []
@@ -216,10 +228,10 @@ def rotate_sample(sample: torch.Tensor) -> torch.Tensor:
         x, y = divmod(node, 65)
         rotated_node = 65 * y + (64 - x)
         destination_indices.append(boundary_positions[rotated_node])
-    rotated_fixed_nodes = torch.empty_like(fixed_nodes)
+    rotated_fixed_nodes_one_hot = torch.empty_like(fixed_nodes_one_hot)
     destination_indices = torch.tensor(destination_indices, device=sample.device)
-    rotated_fixed_nodes[destination_indices] = fixed_nodes
-    rotated_sample[5:5 + 4 * 64] = rotated_fixed_nodes
+    rotated_fixed_nodes_one_hot[destination_indices] = fixed_nodes_one_hot
+    rotated_sample[5:5 + 4 * 64] = rotated_fixed_nodes_one_hot
 
     
     # rotate the image
@@ -251,17 +263,17 @@ def params_vectors(load, fixed_dofs, volume_fraction):
     # Remaining elements encode fixed nodes in ascending node-index order.
     # 1 means both displacement components are fixed; 0 means free.
     
-    bc = torch.zeros(4*64) # number of boundary nodes is 4*64
+    bc_one_hot = torch.zeros(4*64) # number of boundary nodes is 4*64
     boundary_nodes = boundary_node_indices()
-    assert len(boundary_nodes) == len(bc)
+    assert len(boundary_nodes) == len(bc_one_hot)
     fixed_dofs_set = set(fixed_dofs)
     for i, node in enumerate(boundary_nodes):
         if node*2 in fixed_dofs_set:
             assert node*2+1 in fixed_dofs_set, "DOF pairs must be consecutive"
-            bc[i] = 1
+            bc_one_hot[i] = 1
     
 
-    return torch.cat([torch.tensor([volume_fraction]), loads, bc])
+    return torch.cat([torch.tensor([volume_fraction]), loads, bc_one_hot])
 
 
 def orientation_angle(normalized_load_coordinates) -> int:
@@ -293,3 +305,54 @@ def preprocess(volume_fraction, load, fixed_dofs, stress, patch_size):
     sample[5+4*64:] = patchify(sample[5+4*64:].reshape(64, 64), patch_size).flatten()
 
     return sample
+
+def postprocess(prediction: torch.Tensor, angle: int, patch_size: int, load=None, fixed_dofs_one_hot=None, binarify_densities: bool = False):
+    """
+    Postprocess a sample from the model.
+
+    prediction: the output sample tensor from the model
+    patch_size: the size of the patches used during preprocessing
+    load: the load vector from rotated sample (optional)
+    fixed_dofs_one_hot: one-hot encoding of the fixed degrees of freedom (optional)
+    angle: the angle of rotation applied during preprocessing
+    binarify_densities: if true, the density values will be rounded to 0 or 1 (as int)
+
+    Returns the postprocessed sample as a tuple containing:
+    - the prediction tensor
+    - the load vector (if provided, otherwise None)
+    - the fixed degrees of freedoms un-one-hot encoded (if provided, otherwise None)
+    """
+    
+    
+    # unpatchify
+    prediction = unpatchify(prediction, patch_size)
+    
+    # unrotate    
+    if load is None and fixed_dofs_one_hot is None:
+        for _ in range(4 - angle):
+            prediction = prediction.rot90(1, [0, 1])
+    
+    if load is not None or fixed_dofs_one_hot is not None:
+        sample = torch.cat([torch.tensor([0.0]), load, fixed_dofs_one_hot, prediction.flatten()])
+        for _ in range(4 - angle):
+            sample = rotate_sample(sample)
+        
+        prediction = sample[5+4*64:].reshape(64, 64)
+        
+        if load is not None:
+            load = sample[1:5]
+        if fixed_dofs_one_hot is not None:
+            fixed_dofs_one_hot = sample[5:5+4*64]
+            # un-one-hot-encode the fixed degrees of freedom to return them to their original form
+            fixed_dofs = un_one_hot_encode(fixed_dofs_one_hot).detach().cpu().numpy()
+            
+        
+
+        
+    # binarify if requested
+    if binarify_densities:
+        prediction = (prediction > 0.5).int()
+        
+    res = (prediction, load, fixed_dofs if fixed_dofs_one_hot is not None else None)
+    
+    return res

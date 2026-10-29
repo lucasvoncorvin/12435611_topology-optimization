@@ -57,6 +57,25 @@ def _positional_encoding(position, dim_encoding, device, dtype):
         pe[k+1] = math.cos(position / (N ** (k / dim_encoding)))
     return pe
     
+def build_positional_encoding(patch_size, embedding_dims) -> torch.Tensor:
+    """Builds the positional encoding for all patches in a 64x64 grid given the patch size and embedding dimensions.
+    
+    Returns positional encodings for all patches as a tensor of shape (n_patches, embedding_dims)
+    """
+    if embedding_dims % 4 != 0:
+        raise ValueError("embedding_dims must be divisible by 4")
+
+    side = 64 // patch_size
+    positions = torch.arange(side * side, dtype=torch.float64)
+    frequencies = torch.arange(0, embedding_dims // 2, 2, dtype=torch.float64)
+
+    def encode(position):
+        angles = position[:, None] / (10000 ** (frequencies / (embedding_dims // 2)))
+        return torch.stack((angles.sin(), angles.cos()), dim=-1).flatten(start_dim=1)
+
+    rows = (positions // side)
+    cols = (positions % side)
+    return torch.cat((encode(rows), encode(cols)), dim=1).float()
 
 def add_positional_encoding(patches, patch_size, embedding_dims, device, dtype):
     """Adds frequency-based positional encoding to the patch embeddings in place.

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import math
-from .utils import add_positional_encoding, attention
+from .utils import add_positional_encoding, attention, build_positional_encoding
 
 
 class ViT_V1(torch.nn.Module):
@@ -56,6 +56,13 @@ class ViT_V1(torch.nn.Module):
         self.linear_ks = nn.ModuleList(linear_ks)
         self.linears = nn.ModuleList(linears)
         
+        # positional encodings 
+        self.register_buffer(
+            "positional_encoding",
+            build_positional_encoding(patch_size, embedding_dims),
+            persistent=False,
+        )
+        
         
         self.n_weights = sum(p.numel() for p in self.parameters() if p.requires_grad) # total number of trainable parameters
                 
@@ -82,7 +89,7 @@ class ViT_V1(torch.nn.Module):
         
         # embedding of patches
         patch_embeddings = self.linear_patch(patches)
-        add_positional_encoding(patch_embeddings, self.patch_size, self.embedding_dims, device=patch_embeddings.device, dtype=patch_embeddings.dtype) # adds positional encoding to the patch embeddings
+        patch_embeddings = self.linear_patch(patches) + self.positional_encoding
         
         embeddings = torch.cat([param_embeddings, patch_embeddings], dim=1)
         
