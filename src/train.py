@@ -123,6 +123,8 @@ def make_optimizer(optimizer_name: str):
     """
     if optimizer_name == "adam":
         return optim.Adam
+    if optimizer_name == "adadelta":
+        return optim.Adadelta
     else:
         raise ValueError(f"Unsupported optimizer: {optimizer_name}")
 
@@ -362,7 +364,7 @@ if __name__ == "__main__":
         training_config = TrainingConfig(
             n_epochs=n_epochs,
             batch_size=256,
-            optimizer="adam",
+            optimizer="adadelta",
             learning_rate=0.001,
             loss="bce",
         )
