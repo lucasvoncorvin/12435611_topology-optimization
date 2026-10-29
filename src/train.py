@@ -125,6 +125,8 @@ def make_optimizer(optimizer_name: str):
         return optim.Adam
     if optimizer_name == "adadelta":
         return optim.Adadelta
+    if optimizer_name == "adamw":
+        return optim.AdamW
     else:
         raise ValueError(f"Unsupported optimizer: {optimizer_name}")
 
@@ -331,7 +333,7 @@ def optimize(checkpoint: Checkpoint, training_data_dir: Path, validation_data_di
 
 if __name__ == "__main__":
     
-    n_epochs = 100
+    n_epochs = 200
     
     checkpoint_file = None # Path("trainings/ViT_V1_e4_q2_b1_h2_p8/adam_0.001_mse/epoch_10.pth") # None
 
@@ -356,7 +358,7 @@ if __name__ == "__main__":
             query_dims=2,
             n_attention_blocks=1,
             n_attention_heads=2,
-            patch_size=8
+            patch_size=4
         )
         
         assert model_spec.model_name in MODEL_REGISTRY.keys()
@@ -364,7 +366,7 @@ if __name__ == "__main__":
         training_config = TrainingConfig(
             n_epochs=n_epochs,
             batch_size=256,
-            optimizer="adadelta",
+            optimizer="adam",
             learning_rate=0.001,
             loss="bce",
         )
