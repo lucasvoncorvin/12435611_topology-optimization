@@ -1,6 +1,42 @@
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+
+def idx_to_coordinates(idx, normalize=False):
+    """translate a node index to its (normalized) coordinates within the grid
+    
+    Mental model:
+    (0,0)    (1, 0)
+    --------> x
+    |
+    |
+    v y
+    (0, 1)
+    """
+    
+    x = idx // 65 # 65 nodes per row
+    y = idx % 65
+    if normalize:
+        return x / 64, y / 64
+    else:
+        return x, y
+
+def coordinates_to_idx(x, y, normalized=False) -> int:
+    """translate (normalized) coordinates within the grid to a node index"""
+    if normalized:
+        x = int(round(x * 64))
+        y = int(round(y * 64))
+    return x * 65 + y
+
+
+def boundary_node_indices() -> list[int]:
+    """Return boundary nodes in the same index order used by the parameter vector."""
+    return [
+        node
+        for node in range(65 * 65)
+        if node // 65 in (0, 64) or node % 65 in (0, 64)
+    ]
 
 def reshape_distribution(distribution):
     """Reshape a flattened (64*64,) distribution into a (64, 64) image indexed by [y, x]."""
@@ -36,7 +72,8 @@ def visualize(true_density, predicted_density, load=None, bcs=None, volume_fract
         density = to_numpy(value)
         if density.shape not in ((4096,), (1, 4096)) or not np.isfinite(density).all():
             raise ValueError(f"{name} must be a finite patch-ordered vector of shape (4096,) or (1, 4096).")
-        densities.append(density.reshape(8, 8, 8, 8).transpose(0, 2, 1, 3).reshape(64, 64))
+        density = density.reshape(4096)
+        densities.append(unpatchify(torch.as_tensor(density), patch_size=8).numpy())
 
     fixed_nodes = np.empty(0, dtype=np.int64)
     if bcs is not None:
@@ -47,10 +84,7 @@ def visualize(true_density, predicted_density, load=None, bcs=None, volume_fract
             or not np.isin(boundary_mask, (0, 1)).all()
         ):
             raise ValueError("bcs must be the dataset's binary boundary mask of shape (256,).")
-        nodes = np.arange(65 * 65)
-        boundary_nodes = nodes[
-            np.isin(nodes // 65, (0, 64)) | np.isin(nodes % 65, (0, 64))
-        ]
+        boundary_nodes = np.asarray(boundary_node_indices())
         fixed_nodes = boundary_nodes[boundary_mask == 1]
 
     if load is not None:
@@ -114,3 +148,148 @@ def visualize(true_density, predicted_density, load=None, bcs=None, volume_fract
     fig.colorbar(image, ax=axes.tolist(), label="Density")
     plt.show()
     return fig, axes
+
+
+def patchify(image: torch.Tensor, patch_size: int) -> torch.Tensor:
+    """Flatten images into consecutive patches, preserving leading dimensions."""
+    if image.shape[-2:] != (64, 64):
+        raise ValueError("Expected image dimensions (64, 64)")
+    if patch_size <= 0 or 64 % patch_size != 0:
+        raise ValueError("Patch size must be positive and divide 64")
+
+    n = 64 // patch_size
+    leading_shape = image.shape[:-2]
+
+    return ( #! ai helped me a bit here with the transpose
+        image.reshape(*leading_shape, n, patch_size, n, patch_size)
+        .transpose(-3, -2)
+        .flatten(start_dim=-4)
+    )
+                    
+
+def unpatchify(flattened_image: torch.Tensor, patch_size: int) -> torch.Tensor:
+    """Reconstruct 64x64 image(s) from flattened consecutive patches."""
+    if patch_size <= 0 or 64 % patch_size != 0:
+        raise ValueError("Patch size must be positive and divide 64")
+    if flattened_image.ndim == 0 or flattened_image.shape[-1] != 64 * 64:
+        raise ValueError("Expected flattened image(s) with 4096 values each")
+
+    n = 64 // patch_size
+    leading_shape = flattened_image.shape[:-1]
+
+    return (
+        flattened_image.reshape(*leading_shape, n, n, patch_size, patch_size)
+        .transpose(-3, -2)
+        .reshape(*leading_shape, 64, 64)
+    )
+
+def _validate_sample(sample: torch.Tensor) -> None:
+    expected_size = 1 + 4 + 4 * 64 + 64 * 64
+    if sample.ndim != 1 or sample.numel() != expected_size:
+        raise ValueError(f"sample must be a flat tensor with {expected_size} values")
+
+
+def rotate_sample(sample: torch.Tensor) -> torch.Tensor:
+    """Rotate a flat sample 90 degrees counterclockwise.
+
+    The sample contains volume fraction, load position and direction, 256
+    boundary-condition flags, and a flattened 64x64 spatial distribution.
+    """
+    _validate_sample(sample)
+
+    rotated_sample = sample.clone()
+
+    load_coordinates = sample[1:3] # normalized coordinates of the load application point
+    load_direction = sample[3:5] # components of the load vector
+    rotated_sample[1] = load_coordinates[1]
+    rotated_sample[2] = 1 - load_coordinates[0]
+    rotated_sample[3] = -load_direction[1]
+    rotated_sample[4] = load_direction[0]
+
+
+    # Boundary flags follow the parameter vector's node-index order, not perimeter order.
+    fixed_nodes = sample[5:5 + 4 * 64]
+    boundary_nodes = boundary_node_indices()
+    boundary_positions = {node: index for index, node in enumerate(boundary_nodes)}
+    destination_indices = []
+    for node in boundary_nodes:
+        x, y = divmod(node, 65)
+        rotated_node = 65 * y + (64 - x)
+        destination_indices.append(boundary_positions[rotated_node])
+    rotated_fixed_nodes = torch.empty_like(fixed_nodes)
+    destination_indices = torch.tensor(destination_indices, device=sample.device)
+    rotated_fixed_nodes[destination_indices] = fixed_nodes
+    rotated_sample[5:5 + 4 * 64] = rotated_fixed_nodes
+
+    
+    # rotate the image
+    image = sample[5+4*64:].reshape(64, 64) # unflatten so we can use the rot90 function
+    image = torch.rot90(image, k=1, dims=(0, 1))
+    rotated_sample[5+4*64:] = image.flatten()
+    
+    return rotated_sample
+    
+def params_vectors(load, fixed_dofs, volume_fraction):
+    """Returns a representation of the load, the boundary conditions and the volume fraction
+    with length 1 + 4 + 4*64 = 261 (volume fraction + load representation + boundary conditions)
+    """
+    fixed_dofs_set = set(fixed_dofs)
+    for dof in fixed_dofs_set:
+        # just rechecking the data
+        partner = dof + 1 if dof % 2 == 0 else dof - 1
+        assert partner in fixed_dofs_set, "DOF pairs must be consecutive"
+    assert 0 <= volume_fraction <= 1, "Volume fraction must be between 0 and 1"
+    
+    # first two elements of the load representation are the normalized coordinates of the load application point
+    loads = torch.zeros(4)
+    loads[0], loads[1] = idx_to_coordinates(int(load[0]), normalize=True)
+    
+    # second two elements are the load vector
+    loads[2] = load[1]
+    loads[3] = load[2]
+    
+    # Remaining elements encode fixed nodes in ascending node-index order.
+    # 1 means both displacement components are fixed; 0 means free.
+    
+    bc = torch.zeros(4*64) # number of boundary nodes is 4*64
+    boundary_nodes = boundary_node_indices()
+    assert len(boundary_nodes) == len(bc)
+    fixed_dofs_set = set(fixed_dofs)
+    for i, node in enumerate(boundary_nodes):
+        if node*2 in fixed_dofs_set:
+            assert node*2+1 in fixed_dofs_set, "DOF pairs must be consecutive"
+            bc[i] = 1
+    
+
+    return torch.cat([torch.tensor([volume_fraction]), loads, bc])
+
+
+def orientation_angle(normalized_load_coordinates) -> int:
+    """Returns the angle of rotation needed to orient the image based on the load position.
+    (This can be generalized for multiple loads, by taking the average weighted position of the loads)
+
+    Returns the angle of rotation applied (in steps of pi/2).
+    """
+    # _validate_sample(sample)
+    # determine the angle based on the load position
+    if normalized_load_coordinates[0] == 1.0:  # right side
+        angle = 1
+    elif normalized_load_coordinates[1] == 1.0:  # bottom side
+        angle = 2
+    elif normalized_load_coordinates[0] == 0.0:  # left side
+        angle = 3
+    else:
+        angle = 0
+    
+    return angle        
+
+def preprocess(volume_fraction, load, fixed_dofs, stress, patch_size):
+    """returns a sample for the model"""
+    params = params_vectors(load, fixed_dofs, volume_fraction)
+    angle = orientation_angle(params[1:3])
+    sample = torch.cat([params, stress.flatten()])
+    for _ in range(angle):
+        sample = rotate_sample(sample)
+    sample[5+4*64:] = patchify(sample[5+4*64:].reshape(64, 64), patch_size).flatten()
+
+    return sample

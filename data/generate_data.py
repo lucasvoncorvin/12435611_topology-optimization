@@ -21,11 +21,11 @@ from topoptlab.fem import assemble_matrix, create_matrixinds
 
 N_ELEMENTS_PER_EDGE = 64 # Number of elements along one edge of the square domain
 EDGE_LENGTH = N_ELEMENTS_PER_EDGE + 1
-N_PROCESSES = 6 
+N_PROCESSES = 6
 
 def generate_data():
     
-    n_samples = 30000
+    n_samples = 2
     
     # build catalog of possible boundary conditions once in the beginning
     bc_catalog = _build_bc_catalog()

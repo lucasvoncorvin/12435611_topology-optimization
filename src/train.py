@@ -1,6 +1,6 @@
 from time import time
 
-from .model import ViT
+from .models.ViTV1 import ViT_V1
 from .dataset import TODataset, Mode
 from .loss import CustomLoss
 import torch
@@ -16,6 +16,11 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+
+MODEL_REGISTRY = {
+    "vit_v1": ViT_V1
+}
+
 @dataclass
 class Hyperparameters:
     n_epochs: int
@@ -28,7 +33,24 @@ class Hyperparameters:
     loss: str
     # batch_size ?
     # n_training_samples ?
-    
+    patch_size: int 
+
+@dataclass
+class ModelSpec:
+    model_name: str
+    embedding_dims: int
+    query_dims: int
+    n_attention_blocks: int
+    n_attention_heads: int
+    patch_size: int
+
+@dataclass
+class TrainingConfig:
+    optimizer: str
+    learning_rate: float
+    batch_size: int
+    loss: str
+    n_epochs: int # max number of epochs
 @dataclass
 class TrainingResults:
     train_losses: list
@@ -36,9 +58,11 @@ class TrainingResults:
 @dataclass
 class Checkpoint:
     path: Path | None  # path to the checkpoint file, None if starting from scratch
+    model_spec: ModelSpec
+    training_config: TrainingConfig
+    epoch: int | None  # current epoch, None if starting from scratch
     model_state_dict: dict | None  # none if starting from scratch
     optimizer_state_dict: dict | None 
-    params: Hyperparameters
     results: TrainingResults | None
 
 def plot_training_history(train_losses, validation_losses, path=None, show=True):
@@ -65,11 +89,13 @@ def save_checkpoint(checkpoint: Checkpoint, plot: bool = False):
         checkpoint.results = TrainingResults(train_losses=[], validation_losses=[])
         logger.warning("Checkpoint results are None.")
     checkpoint.path.parent.mkdir(parents=True, exist_ok=True)
-    logging.info(f"Saving checkpoint with hyperparameters {checkpoint.params} to {checkpoint.path}")
+    logging.info(f"Saving checkpoint with to {checkpoint.path}")
     torch.save({
+        "model_spec": dataclasses.asdict(checkpoint.model_spec),
+        "training_config": dataclasses.asdict(checkpoint.training_config),
+        "epoch": checkpoint.epoch,
         "model_state_dict": checkpoint.model_state_dict,
         "optimizer_state_dict": checkpoint.optimizer_state_dict,
-        "hyperparameters": dataclasses.asdict(checkpoint.params),
         "results": dataclasses.asdict(checkpoint.results),
     }, checkpoint.path)
     if plot:
@@ -81,9 +107,11 @@ def load_checkpoint(filepath: Path, device = "cpu") -> Checkpoint:
     checkpoint_data = torch.load(filepath, map_location=device)
     checkpoint = Checkpoint(
         path=filepath,
+        model_spec=ModelSpec(**checkpoint_data["model_spec"]),
+        training_config=TrainingConfig(**checkpoint_data["training_config"]),
+        epoch=checkpoint_data["epoch"],
         model_state_dict=checkpoint_data["model_state_dict"],
         optimizer_state_dict=checkpoint_data["optimizer_state_dict"],
-        params=Hyperparameters(**checkpoint_data["hyperparameters"]),
         results=TrainingResults(**checkpoint_data["results"])
     )
     return checkpoint
@@ -98,8 +126,10 @@ def make_optimizer(optimizer_name: str):
     else:
         raise ValueError(f"Unsupported optimizer: {optimizer_name}")
 
-def make_loss(loss_name: str):
+def make_loss(loss_name: str, patch_size=None):
     """Loss function factory
+    
+    
     
     returns the corresponding loss function class based on the loss_name provided.
     """
@@ -114,9 +144,13 @@ def make_loss(loss_name: str):
     if loss_name == "bce":
         return nn.BCELoss()
     if loss_name == "custom_mse":
-        return CustomLoss(base_loss_fn=nn.MSELoss())
+        if not patch_size:
+            raise ValueError("patch_size must be provided for custom loss functions")
+        return CustomLoss(base_loss_fn=nn.MSELoss(), patch_size=patch_size)
     if loss_name == "custom_bce":
-        return CustomLoss(base_loss_fn=nn.BCELoss())
+        if not patch_size:
+            raise ValueError("patch_size must be provided for custom loss functions")
+        return CustomLoss(base_loss_fn=nn.BCELoss(), patch_size=patch_size)
     else:
         raise ValueError(f"Unsupported loss function: {loss_name}")
 
@@ -173,55 +207,56 @@ def validate(model: torch.nn.Module, dataloader: DataLoader, loss_fn, device):
         
     return total_loss / n_samples
 
-def optimize(checkpoint: Checkpoint):
+def optimize(checkpoint: Checkpoint, training_data_dir: Path, validation_data_dir: Path):
     device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
     logging.info(f"Using device: {device}")
     
     # prepare data loaders, loss function, model, and optimizer
     train_dataloader = DataLoader(
-        dataset=TODataset(Mode.TRAIN),
-        batch_size=256
+        dataset=TODataset(training_data_dir, checkpoint.model_spec.patch_size),
+        batch_size=checkpoint.training_config.batch_size
     )
     validate_dataloader = DataLoader(
-        dataset=TODataset(Mode.VALIDATE),
-        batch_size=256
+        dataset=TODataset(validation_data_dir, checkpoint.model_spec.patch_size),
+        batch_size=checkpoint.training_config.batch_size
     )
-    loss_fn = make_loss(checkpoint.params.loss)
+    loss_fn = make_loss(checkpoint.training_config.loss, patch_size=checkpoint.model_spec.patch_size)
     
     
     
     # Model
-    vit = ViT(
-        embedding_dims=checkpoint.params.embedding_dims,
-        query_dims=checkpoint.params.query_dims,
-        n_attention_blocks=checkpoint.params.n_attention_blocks,
-        n_attention_heads=checkpoint.params.n_attention_heads,
+    vit = MODEL_REGISTRY[checkpoint.model_spec.model_name](
+        embedding_dims=checkpoint.model_spec.embedding_dims,
+        query_dims=checkpoint.model_spec.query_dims,
+        n_attention_blocks=checkpoint.model_spec.n_attention_blocks,
+        n_attention_heads=checkpoint.model_spec.n_attention_heads,
+        patch_size=checkpoint.model_spec.patch_size
     ).to(device)
-    logging.info(f"Initialized ViT model with embedding_dims={checkpoint.params.embedding_dims}, query_dims={checkpoint.params.query_dims}, n_attention_blocks={checkpoint.params.n_attention_blocks}, n_attention_heads={checkpoint.params.n_attention_heads}, n_parameters={vit.n_weights}")
+    logging.info(f"Initialized ViT model with embedding_dims={checkpoint.model_spec.embedding_dims}, query_dims={checkpoint.model_spec.query_dims}, n_attention_blocks={checkpoint.model_spec.n_attention_blocks}, n_attention_heads={checkpoint.model_spec.n_attention_heads}, n_parameters={vit.n_weights}")
     if checkpoint.model_state_dict is not None:
         logging.info(f"Loading model state from checkpoint: {checkpoint.path}")
         vit.load_state_dict(checkpoint.model_state_dict)
         
 
 
-    optimizer = make_optimizer(checkpoint.params.optimizer)(
+    optimizer = make_optimizer(checkpoint.training_config.optimizer)(
         params=vit.parameters(),
-        lr=checkpoint.params.learning_rate
+        lr=checkpoint.training_config.learning_rate
     )
     if checkpoint.optimizer_state_dict is not None:
         logging.info(f"Loading optimizer state from checkpoint: {checkpoint.path}")
         optimizer.load_state_dict(checkpoint.optimizer_state_dict)
-    logging.info(f"Initialized optimizer {checkpoint.params.optimizer} with lr={checkpoint.params.learning_rate}")
+    logging.info(f"Initialized optimizer {checkpoint.training_config.optimizer} with lr={checkpoint.training_config.learning_rate}")
     
     
     
     
     # set up model directory for saving checkpoints
     current_dir = Path(__file__).parent
-    model_dir = current_dir.parent / "models"
+    model_dir = current_dir.parent / "trainings"
     # create subdirectory for current model and checkpoints by using the model name
     model_subdir = model_dir / vit.name()
-    training_subdir = model_subdir / f"{checkpoint.params.optimizer}_{checkpoint.params.learning_rate}_{checkpoint.params.loss}"
+    training_subdir = model_subdir / f"{checkpoint.training_config.optimizer}_{checkpoint.training_config.learning_rate}_{checkpoint.training_config.loss}"
     training_subdir.mkdir(parents=True, exist_ok=True)
     
     train_losses = checkpoint.results.train_losses if checkpoint.results is not None else []
@@ -229,7 +264,7 @@ def optimize(checkpoint: Checkpoint):
     
     # optimization loop
     start_epoch = len(train_losses)
-    for epoch in range(start_epoch + 1, checkpoint.params.n_epochs + 1):
+    for epoch in range(start_epoch + 1, checkpoint.training_config.n_epochs + 1):
         start_time = time()
         
         train_loss = train(vit, train_dataloader, optimizer, loss_fn, device)
@@ -245,9 +280,11 @@ def optimize(checkpoint: Checkpoint):
             
             checkpoint = Checkpoint(
                 path=training_subdir / f"epoch_{epoch}.pth",
+                model_spec=checkpoint.model_spec,
+                epoch=epoch,
                 model_state_dict=vit.state_dict(),
                 optimizer_state_dict=optimizer.state_dict(),
-                params=checkpoint.params,
+                training_config=checkpoint.training_config,
                 results=TrainingResults(
                     train_losses=train_losses,
                     validation_losses=validation_losses
@@ -273,10 +310,12 @@ def optimize(checkpoint: Checkpoint):
         
     # save model as final checkpoint
     checkpoint = Checkpoint(
-        path=training_subdir / f"{checkpoint.params.n_epochs}.pth",
+        path=training_subdir / f"{checkpoint.training_config.n_epochs}.pth",
+        model_spec=checkpoint.model_spec,
+        epoch=checkpoint.training_config.n_epochs,
         model_state_dict=vit.state_dict(),
         optimizer_state_dict=optimizer.state_dict(),
-        params=checkpoint.params,
+        training_config=checkpoint.training_config,
         results=TrainingResults(
             train_losses=train_losses,
             validation_losses=validation_losses
@@ -290,39 +329,53 @@ def optimize(checkpoint: Checkpoint):
 
 if __name__ == "__main__":
     
-    n_epochs = 1000
+    n_epochs = 100
     
-    checkpoint_file = None # Path("models/ViT_1070424_4_2_1/adam_0.001_mse/epoch_1000.pth") # None
+    checkpoint_file = None # Path("trainings/ViT_V1_e4_q2_b1_h2_p8/adam_0.001_mse/epoch_10.pth") # None
+
+    project_root = Path(__file__).parent.parent
+    training_data_dir = project_root / "data/labeled_data/train/augmented_mirrored"
+    validation_data_dir = project_root / "data/labeled_data/val"
 
     if checkpoint_file is not None:
         if not checkpoint_file.exists():
             raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_file}")
         checkpoint = load_checkpoint(checkpoint_file)
-        checkpoint.params.n_epochs = n_epochs
-        start_epoch = len(checkpoint.results.train_losses) if checkpoint.results is not None else 0
+        checkpoint.training_config.n_epochs = n_epochs
+        start_epoch = checkpoint.epoch if checkpoint.results is not None else 0
         logger.info(f"Resuming training from epoch {start_epoch}")
-        assert start_epoch < checkpoint.params.n_epochs
+        assert start_epoch is not None and start_epoch < checkpoint.training_config.n_epochs
         
     else:
         # initialize a new checkpoint if no checkpoint file is provided
-        params = Hyperparameters(
-            n_epochs=n_epochs,
+        model_spec = ModelSpec(
+            model_name="vit_v1",
             embedding_dims=4,
             query_dims=2,
             n_attention_blocks=1,
             n_attention_heads=2,
+            patch_size=8
+        )
+        
+        assert model_spec.model_name in MODEL_REGISTRY.keys()
+        
+        training_config = TrainingConfig(
+            n_epochs=n_epochs,
+            batch_size=256,
             optimizer="adam",
             learning_rate=0.001,
-            loss="custom_mse"
+            loss="bce",
         )
         checkpoint = Checkpoint(
             path=None,
+            epoch=0,
+            model_spec=model_spec,
             model_state_dict=None,
             optimizer_state_dict=None,
-            params=params,
+            training_config=training_config,
             results=None
         )
     
 
-    checkpoint = optimize(checkpoint)    
+    checkpoint = optimize(checkpoint, training_data_dir, validation_data_dir)    
     

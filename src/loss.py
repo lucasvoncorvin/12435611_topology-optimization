@@ -7,6 +7,7 @@
 
 import torch
 
+# ! todo: make patch_size a parameter or (better) pass pred as 2D tensor directly
 
 def _density_index_to_absolute_coordinates(idx):
     return (idx // 64, idx % 64)
@@ -39,8 +40,9 @@ class VolumeFractionLoss(torch.nn.Module):
 
 
 class LoadDiscrepancyLoss(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, patch_size):
         super().__init__()
+        self.patch_size = patch_size
 
     def forward(self, pred, load):
         """Penalizes failure to allocate sufficient material in regions where load is applied.
@@ -49,7 +51,11 @@ class LoadDiscrepancyLoss(torch.nn.Module):
         load: tensor as provided by the dataset (x_location_normalized, y_location_normalized, x_magnitude, y_magnitude)
         """
         
-        pred2d = pred.reshape(-1, 8, 8, 8, 8).permute(0, 1, 3, 2, 4).reshape(-1, 64, 64)
+        pred2d = pred.reshape(
+            pred.shape[0], 
+            64 // self.patch_size, 64 // self.patch_size, 
+            self.patch_size, self.patch_size
+        ).permute(0, 1, 3, 2, 4).reshape(pred.shape[0], 64, 64)
         
         # get elements adjacent to load application points
         adjacent_elements_rows, adjacent_elements_cols, valid_elements = _load_adjacent_elements(load)
@@ -74,7 +80,7 @@ class LoadDiscrepancyLoss(torch.nn.Module):
 
 
 class FloatingMaterialLoss(torch.nn.Module):
-    def __init__(self, max_iteration=300, tolerance=1e-4, scale=10, shift=0.5):
+    def __init__(self, patch_size, max_iteration=300, tolerance=1e-4, scale=10, shift=0.5):
         """
         Initializes the FloatingMaterialLoss module.
 
@@ -86,6 +92,7 @@ class FloatingMaterialLoss(torch.nn.Module):
         """
         
         super().__init__()
+        self.patch_size = patch_size
         self.max_iteration = max_iteration
         self.tolerance = tolerance
         self.scale = scale
@@ -96,8 +103,12 @@ class FloatingMaterialLoss(torch.nn.Module):
         # taken from Tabarraei et al. "Physics-informed transformer for real-time high-fidelity topology optimization" -> Algorithm 1
         """
         
-        pred_2d = pred.reshape(-1, 8, 8, 8, 8).permute(0, 1, 3, 2, 4).reshape(-1, 64, 64) # todo: review this
-        
+        pred_2d = pred.reshape(
+            pred.shape[0], 
+            64 // self.patch_size, 64 // self.patch_size, 
+            self.patch_size, self.patch_size
+        ).permute(0, 1, 3, 2, 4).reshape(pred.shape[0], 64, 64)
+                
         # get seed as element adjacent to the load (which must always exist)
         rows, cols, valid = _load_adjacent_elements(load)
         batch = torch.arange(pred.shape[0], device=pred.device)
@@ -132,7 +143,7 @@ class FloatingMaterialLoss(torch.nn.Module):
         return loss.sum(dim=(1, 2)).mean()
     
 class CustomLoss(torch.nn.Module):
-    def __init__(self, base_loss_fn, auxiliary_loss_weight=0.075):
+    def __init__(self, base_loss_fn, patch_size, auxiliary_loss_weight=0.075):
         """
         Args:
             base_loss_fn: The base loss function to use.
@@ -143,8 +154,8 @@ class CustomLoss(torch.nn.Module):
         self.auxiliary_weight = auxiliary_loss_weight
         self.n_elements = 64 * 64
         self.volume_fraction_loss = VolumeFractionLoss()
-        self.load_discrepancy_loss = LoadDiscrepancyLoss()
-        self.floating_material_loss = FloatingMaterialLoss()
+        self.load_discrepancy_loss = LoadDiscrepancyLoss(patch_size)
+        self.floating_material_loss = FloatingMaterialLoss(patch_size)
         
     def forward(self, pred, target, load, target_volume_fraction):
         

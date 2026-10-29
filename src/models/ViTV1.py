@@ -1,84 +1,24 @@
 import torch
 import torch.nn as nn
 import math
+from .utils import add_positional_encoding, attention
 
 
-def _idx_to_coordinates(idx, normalize=False):
-    """translate a node index to its (normalized) coordinates within the grid"""
-    row = idx // 64
-    col = idx % 64
-    if normalize:
-        return row / 64, col / 64
-    else:
-        return row, col
-
-def attention(keys, queries, values):
-    """Computes the attention function in batches.
-    
-    Args:
-        keys: Tensor (batch_size, n_patches, QUERY_DIMS)
-        queries: Tensor (batch_size, n_patches, QUERY_DIMS)
-        values: Tensor (batch_size, n_patches, EMBEDDING_DIMS)
-
-    Returns:
-        Tensor (batch_size, n_patches, EMBEDDING_DIMS)
-    """
-    scores = (queries @ keys.transpose(-2, -1)) / math.sqrt(queries.shape[-1]) # ! Used ai here to help me with the correct transposition for the matrix multiplication
-    weights = torch.softmax(scores, dim=-1)
-    return weights @ values
-
-
-
-
-def _positional_encoding(position, dim_encoding, device, dtype):
-    """Generates a frequency-based positional encoding for a given position and dimension
-    
-    Args:
-        position (int): The position for which to generate the encoding.
-        dim_encoding (int): The dimension of the positional encoding.
-
-    Returns:
-        torch.Tensor: Positional encoding vector of shape (dim_encoding,)
-    """
-    pe = torch.zeros(dim_encoding, device=device, dtype=dtype)
-    N = 10000
-    
-    for k in range(0, dim_encoding, 2):
-        pe[k] = math.sin(position / (N ** (k / dim_encoding)))
-        pe[k+1] = math.cos(position / (N ** (k / dim_encoding)))
-    return pe
-    
-
-def add_positional_encoding(patches, embedding_dims, device, dtype):
-    """Adds frequency-based positional encoding to the patch embeddings in place.
-    
-    Args:
-        patches: Tensor of shape (batch_size, n_patches, patch_size)
-    """
-    
-    assert embedding_dims % 4 == 0, "Embedding dimensions must be divisible by 4 for positional encoding"
-    
-    for k in range(patches.shape[1]):
-        row = k // 8
-        col = k % 8
-        patches[:, k, 0:embedding_dims//2] += _positional_encoding(row, embedding_dims//2, device, dtype)
-        patches[:,k, embedding_dims//2:embedding_dims] += _positional_encoding(col, embedding_dims//2, device, dtype)
-            
-
-
-class ViT(torch.nn.Module):
+class ViT_V1(torch.nn.Module):
     def __init__(
             self,
             embedding_dims,
             query_dims,
             n_attention_blocks,
             n_attention_heads,
+            patch_size,
         ):
         
+        assert __file__.endswith(self.__class__.__name__[-2::] + ".py") # just check I actually made sure to align the versions (up to V9)
         assert embedding_dims % n_attention_heads == 0, "Embedding dimensions must be divisible by the number of attention heads"
         assert query_dims % n_attention_heads == 0, "Query dimensions must be divisible by the number of attention heads"
         
-        super(ViT, self).__init__()
+        super(ViT_V1, self).__init__()
         
         # create seed for reproducibility
         torch.manual_seed(42)
@@ -89,16 +29,17 @@ class ViT(torch.nn.Module):
         self.n_attention_blocks = n_attention_blocks
         self.n_attention_heads = n_attention_heads
         
-        self.n_patches = 8*8 # 8x8 image patches -> 8*8 = 64 patch in 64x64 grid
-        self.patch_size = 8*8
+        self.n_patches = (64 // patch_size) * (64 // patch_size) 
+        self.patch_size = patch_size
+        self.elements_per_patch = patch_size**2
         
         self.embedding_dims_head = self.embedding_dims // self.n_attention_heads
         self.query_dims_head = self.query_dims // self.n_attention_heads
         
         # input and output
-        self.linear_patch = nn.Linear(self.patch_size, self.embedding_dims)
+        self.linear_patch = nn.Linear(self.elements_per_patch, self.embedding_dims)
         self.linear_param = nn.Linear(1+4+4*64, self.embedding_dims) # dimension of the parameter vector
-        self.readout = nn.Linear(self.n_patches*self.embedding_dims + self.embedding_dims, self.n_patches*self.patch_size) # get the whole optimized topology at once
+        self.readout = nn.Linear(self.n_patches*self.embedding_dims + self.embedding_dims, self.n_patches*self.elements_per_patch) # get the whole optimized topology at once
         
         # attention stuff
         linear_vs = []
@@ -123,17 +64,17 @@ class ViT(torch.nn.Module):
         """Forward pass of the Vision Transformer.
 
         Args:
-            x (torch.Tensor): Input tensor of shape (batch_size, 1+4+4*64 + n_patches*patch_size)
+            x (torch.Tensor): Input tensor of shape (batch_size, 1+4+4*64 + n_patches*elements_per_patch)
 
         Returns:
-            torch.Tensor: Output tensor of shape (batch_size, n_patches*patch_size)
+            torch.Tensor: Output tensor of shape (batch_size, n_patches*elements_per_patch)
             Each output corresponds to the concatenated flattened patches of densities in the optimized topology.
         """
 
         n_samples = x.shape[0]
         
         params = x[:, 0:1+4+4*64].unsqueeze(1) # add one dimension to concatenate along with the patch embeddings
-        patches = x[:, 1+4+4*64::].reshape(n_samples, self.n_patches, self.patch_size)
+        patches = x[:, 1+4+4*64::].reshape(n_samples, self.n_patches, self.elements_per_patch)
         
     
         # embedding of parameters (load, boundary conditions, volume fraction)
@@ -141,7 +82,7 @@ class ViT(torch.nn.Module):
         
         # embedding of patches
         patch_embeddings = self.linear_patch(patches)
-        add_positional_encoding(patch_embeddings, self.embedding_dims, device=patch_embeddings.device, dtype=patch_embeddings.dtype) # adds positional encoding to the patch embeddings
+        add_positional_encoding(patch_embeddings, self.patch_size, self.embedding_dims, device=patch_embeddings.device, dtype=patch_embeddings.dtype) # adds positional encoding to the patch embeddings
         
         embeddings = torch.cat([param_embeddings, patch_embeddings], dim=1)
         
@@ -170,6 +111,6 @@ class ViT(torch.nn.Module):
     
     
     def name(self):
-        """Defines a name based on the hyperparameters of the model."""
-        return f"ViT_{self.n_weights}_{self.embedding_dims}_{self.query_dims}_{self.n_attention_blocks}_{self.n_attention_heads}"
+        """Defines a name based on the model architecture."""
+        return f"{self.__class__.__name__}_e{self.embedding_dims}_q{self.query_dims}_b{self.n_attention_blocks}_h{self.n_attention_heads}_p{self.patch_size}"
     
