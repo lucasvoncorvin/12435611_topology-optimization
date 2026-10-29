@@ -1,7 +1,12 @@
-topopt_data.csv
 */__pycache__/
+*.pyc
+
+# data
+topopt_data.csv
 *.npy
 *.npz
+
+# model checkpoints and outputs
 *.pth
 *.pt
 *.png
