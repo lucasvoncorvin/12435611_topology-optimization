@@ -48,12 +48,12 @@ def reshape_distribution(distribution):
     raise ValueError("distribution must be either a flattened (64*64,) array or a (64, 64) array.")
 
 #! this function was created by ai to help me visualize the results
-def visualize(true_density, predicted_density, load=None, bcs_one_hot=None, volume_fraction=None):
+def visualize(true_density, predicted_density, patch_size, load=None, bcs_one_hot=None, volume_fraction=None):
     """Compare true and predicted densities and return (figure, axes).
 
     Both densities must be patch-ordered vectors of shape (4096,) or (1, 4096).
-    The 8-by-8 patches and the values within each patch are in row-major order,
-    matching the dataset and model outputs. axes contains the true and
+    The patch_size-by-patch_size patches and the values within each patch are
+    in row-major order, matching the dataset and model outputs. axes contains the true and
     predicted panels, respectively.
     load is [x_normalized, y_normalized, fx, fy], with coordinates in [0, 1].
     bcs_one_hot is the dataset's 256-entry binary boundary mask, ordered by increasing
@@ -73,7 +73,7 @@ def visualize(true_density, predicted_density, load=None, bcs_one_hot=None, volu
         if density.shape not in ((4096,), (1, 4096)) or not np.isfinite(density).all():
             raise ValueError(f"{name} must be a finite patch-ordered vector of shape (4096,) or (1, 4096).")
         density = density.reshape(4096)
-        densities.append(unpatchify(torch.as_tensor(density), patch_size=8).numpy())
+        densities.append(unpatchify(torch.as_tensor(density), patch_size=patch_size).numpy())
 
     fixed_nodes = np.empty(0, dtype=np.int64)
     if bcs_one_hot is not None:
