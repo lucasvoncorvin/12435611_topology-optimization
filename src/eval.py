@@ -116,7 +116,7 @@ def rel_compliance_error(predicted, target, load, fixed_dofs, binarify_densities
     predicted: predicted topology as a 64x64 tensor of material densities of 0 or 1
     target: target topology as a 64x64 tensor of material densities of 0 or 1
     
-    Returns the signed relative compliance error as a scalar value ((c_target - c_predicted) / c_target)
+    Returns the absolut relative compliance error as a scalar value (abs(c_predicted-c_target) / c_target)
     """
 
     if binarify_densities:
@@ -127,7 +127,7 @@ def rel_compliance_error(predicted, target, load, fixed_dofs, binarify_densities
     c_predicted = compliance(densities=predicted.numpy(), load=load, fixed_dofs=fixed_dofs)
     c_target = compliance(densities=target.numpy(), load=load, fixed_dofs=fixed_dofs)
     
-    return (c_target - c_predicted) / c_target
+    return min(abs(c_predicted - c_target) / c_target, 1) # max relative compliance error capped at 1
 
 def density_error(predicted):
     """
@@ -137,7 +137,7 @@ def density_error(predicted):
     by comparing the predicted densities to their rounded (binary) values.
     """
     
-    return torch.abs(predicted - predicted.round()).mean()
+    return torch.linalg.norm(predicted - predicted.round(), ord=2).mean()
 
 
 def floating_material_error(predicted, target):
@@ -149,7 +149,7 @@ def rel_volume_error(predicted, target_volume_fraction):
     
     predicted_volume = predicted.sum() / predicted.numel()
     
-    return (predicted_volume - target_volume_fraction) / target_volume_fraction # relative volume error
+    return abs(predicted_volume - target_volume_fraction) / target_volume_fraction # relative volume error
 
 def evaluate_prediction(predicted, target, load, fixed_dofs, volume_fraction):
     """Evaluate a predicted topology against the target topology using multiple error metrics.
