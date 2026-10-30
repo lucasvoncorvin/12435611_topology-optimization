@@ -1,6 +1,7 @@
 from time import time
 
 from .models.ViTV1 import ViT_V1
+from .models.ViTV2 import ViT_V2
 from .dataset import TODataset, Mode
 from .loss import CustomLoss
 import torch
@@ -18,7 +19,8 @@ logging.basicConfig(level=logging.INFO)
 
 
 MODEL_REGISTRY = {
-    "vit_v1": ViT_V1
+    "vit_v1": ViT_V1,
+    "vit_v2": ViT_V2
 }
 
 @dataclass
@@ -333,7 +335,7 @@ def optimize(checkpoint: Checkpoint, training_data_dir: Path, validation_data_di
 
 if __name__ == "__main__":
     
-    n_epochs = 200
+    n_epochs = 1000
     
     checkpoint_file = None # Path("trainings/ViT_V1_e4_q2_b1_h2_p8/adam_0.001_mse/epoch_10.pth") # None
 
@@ -353,12 +355,12 @@ if __name__ == "__main__":
     else:
         # initialize a new checkpoint if no checkpoint file is provided
         model_spec = ModelSpec(
-            model_name="vit_v1",
-            embedding_dims=4,
-            query_dims=2,
-            n_attention_blocks=1,
-            n_attention_heads=2,
-            patch_size=4
+            model_name="vit_v2",
+            embedding_dims=128,
+            query_dims=64,
+            n_attention_blocks=6, # layers, I dont know why I called them blocks
+            n_attention_heads=4,
+            patch_size=8
         )
         
         assert model_spec.model_name in MODEL_REGISTRY.keys()
