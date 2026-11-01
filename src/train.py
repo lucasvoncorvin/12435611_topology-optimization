@@ -2,6 +2,7 @@ from time import time
 
 from .models.ViTV1 import ViT_V1
 from .models.ViTV2 import ViT_V2
+# from .models.ViTV3 import ViT_V3
 from .dataset import TODataset, Mode
 from .loss import CustomLoss
 import torch
@@ -20,7 +21,8 @@ logging.basicConfig(level=logging.INFO)
 
 MODEL_REGISTRY = {
     "vit_v1": ViT_V1,
-    "vit_v2": ViT_V2
+    "vit_v2": ViT_V2,
+    # "vit_v3": ViT_V3
 }
 
 @dataclass
@@ -53,6 +55,8 @@ class TrainingConfig:
     batch_size: int
     loss: str
     n_epochs: int # max number of epochs
+
+
 @dataclass
 class TrainingResults:
     train_losses: list
@@ -213,7 +217,7 @@ def validate(model: torch.nn.Module, dataloader: DataLoader, loss_fn, device):
         
     return total_loss / n_samples
 
-def optimize(checkpoint: Checkpoint, training_data_dir: Path, validation_data_dir: Path):
+def optimize(checkpoint: Checkpoint, training_data_dir: Path, validation_data_dir: Path, training_subdir: Path | None = None):
     device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
     logging.info(f"Using device: {device}")
     
@@ -262,7 +266,8 @@ def optimize(checkpoint: Checkpoint, training_data_dir: Path, validation_data_di
     model_dir = current_dir.parent / "trainings"
     # create subdirectory for current model and checkpoints by using the model name
     model_subdir = model_dir / vit.name()
-    training_subdir = model_subdir / f"{checkpoint.training_config.optimizer}_{checkpoint.training_config.learning_rate}_{checkpoint.training_config.loss}"
+    if not training_subdir:
+        training_subdir = model_subdir / f"{checkpoint.training_config.optimizer}_{checkpoint.training_config.learning_rate}_{checkpoint.training_config.loss}"
     training_subdir.mkdir(parents=True, exist_ok=True)
     
     train_losses = checkpoint.results.train_losses if checkpoint.results is not None else []
@@ -338,20 +343,47 @@ if __name__ == "__main__":
     n_epochs = 1000
     
     checkpoint_file = None # Path("trainings/ViT_V1_e4_q2_b1_h2_p8/adam_0.001_mse/epoch_10.pth") # None
+    next_stage: TrainingConfig | None = None
 
     project_root = Path(__file__).parent.parent
     training_data_dir = project_root / "data/labeled_data/train/augmented_mirrored"
-    validation_data_dir = project_root / "data/labeled_data/val"
+    validation_data_dir = project_root / "data/labeled_data/val/augmented_mirrored"
+
+    training_subdir = None # in case we need a specific subdirectory for this training run e.g. for multiple stages
 
     if checkpoint_file is not None:
         if not checkpoint_file.exists():
             raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_file}")
         checkpoint = load_checkpoint(checkpoint_file)
-        checkpoint.training_config.n_epochs = n_epochs
+        training_subdir = checkpoint.path.parent
         start_epoch = checkpoint.epoch if checkpoint.results is not None else 0
         logger.info(f"Resuming training from epoch {start_epoch}")
+
+        # next_stage = TrainingConfig(
+        #     n_epochs=n_epochs,
+        #     batch_size=256,
+        #     optimizer="adam",
+        #     learning_rate=0.0003,
+        #     loss="custom_mse"
+        # )
+        if next_stage is None:
+            checkpoint.training_config.n_epochs = n_epochs
+        else:
+            checkpoint.training_config = next_stage
+            checkpoint.optimizer_state_dict = None
+
+            # Store a new stage in a nested directory below the parent checkpoint.
+            training_subdir = (
+                checkpoint.path.parent
+                / f"from_e{checkpoint.epoch}"
+                / (
+                    f"{checkpoint.training_config.optimizer}_"
+                    f"{checkpoint.training_config.learning_rate}_"
+                    f"{checkpoint.training_config.loss}"
+                )
+            )
+
         assert start_epoch is not None and start_epoch < checkpoint.training_config.n_epochs
-        
     else:
         # initialize a new checkpoint if no checkpoint file is provided
         model_spec = ModelSpec(
@@ -370,7 +402,7 @@ if __name__ == "__main__":
             batch_size=256,
             optimizer="adam",
             learning_rate=0.001,
-            loss="bce",
+            loss="mse",
         )
         checkpoint = Checkpoint(
             path=None,
@@ -383,5 +415,5 @@ if __name__ == "__main__":
         )
     
 
-    checkpoint = optimize(checkpoint, training_data_dir, validation_data_dir)    
+    checkpoint = optimize(checkpoint, training_data_dir, validation_data_dir, training_subdir)    
     
