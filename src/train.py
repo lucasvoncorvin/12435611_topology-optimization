@@ -300,7 +300,7 @@ def optimize(checkpoint: Checkpoint, training_data_dir: Path, validation_data_di
                     train_losses=train_losses,
                     validation_losses=validation_losses
                 ),
-            # )
+            )
             # if epoch % 100 == 0:
             #     # delete previous checkpoints that are not multiples of 100
             #     logger.info(f"Deleting previous checkpoints that are not multiples of 100")
