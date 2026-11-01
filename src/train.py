@@ -2,7 +2,7 @@ from time import time
 
 from .models.ViTV1 import ViT_V1
 from .models.ViTV2 import ViT_V2
-# from .models.ViTV3 import ViT_V3
+from .models.ViTV3 import ViT_V3
 from .dataset import TODataset, Mode
 from .loss import CustomLoss
 import torch
@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO)
 MODEL_REGISTRY = {
     "vit_v1": ViT_V1,
     "vit_v2": ViT_V2,
-    # "vit_v3": ViT_V3
+    "vit_v3": ViT_V3
 }
 
 @dataclass
@@ -300,14 +300,14 @@ def optimize(checkpoint: Checkpoint, training_data_dir: Path, validation_data_di
                     train_losses=train_losses,
                     validation_losses=validation_losses
                 ),
-            )
-            if epoch % 100 == 0:
-                # delete previous checkpoints that are not multiples of 100
-                logger.info(f"Deleting previous checkpoints that are not multiples of 100")
-                for file in training_subdir.glob("epoch_*.pth"):
-                    epoch_num = int(file.stem.split("_")[1])
-                    if epoch_num % 100 != 0:
-                        file.unlink()
+            # )
+            # if epoch % 100 == 0:
+            #     # delete previous checkpoints that are not multiples of 100
+            #     logger.info(f"Deleting previous checkpoints that are not multiples of 100")
+            #     for file in training_subdir.glob("epoch_*.pth"):
+            #         epoch_num = int(file.stem.split("_")[1])
+            #         if epoch_num % 100 != 0:
+            #             file.unlink()
             # if epoch % 1000 == 0:
             #     logger.info(f"Deleting previous checkpoints that are not multiples of 1000")
             #     # delete previous checkpoints that are not multiples of 1000
