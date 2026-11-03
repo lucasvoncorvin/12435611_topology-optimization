@@ -4,7 +4,7 @@ from .models.ViTV1 import ViT_V1
 from .models.ViTV2 import ViT_V2
 from .models.ViTV3 import ViT_V3
 from .dataset import TODataset, Mode
-from .loss import CustomLoss
+from .loss import CustomLoss, SinkhornDistance
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -161,6 +161,10 @@ def make_loss(loss_name: str, patch_size=None):
         if not patch_size:
             raise ValueError("patch_size must be provided for custom loss functions")
         return CustomLoss(base_loss_fn=nn.BCELoss(), patch_size=patch_size)
+    if loss_name == "wasserstein":
+        if not patch_size:
+            raise ValueError("patch_size must be provided for custom loss functions")
+        return SinkhornDistance(patch_size=patch_size)
     else:
         raise ValueError(f"Unsupported loss function: {loss_name}")
 

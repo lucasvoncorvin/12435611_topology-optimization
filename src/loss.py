@@ -6,6 +6,8 @@
 
 
 import torch
+import math
+import warnings
 
 # ! todo: make patch_size a parameter or (better) pass pred as 2D tensor directly
 
@@ -166,3 +168,168 @@ class CustomLoss(torch.nn.Module):
         
         return self.base_loss(pred, target) + self.auxiliary_weight * (vf_loss + fm_loss + ld_loss) # all auxiliary losses weighted equally
     
+
+
+# Copyright 2018 Daniel Dazac 
+# MIT Licensed
+# License and source: https://github.com/dfdazac/wassdistance/
+# Slightly modified by Thomas Viehmann, see https://github.com/t-vi/pytorch-tvmisc/blob/master/wasserstein-distance/Pytorch_Wasserstein.ipynb
+# Also slightly modifed by me to adapt to use case
+# ! ai was used to improve and evaluate this implementation
+class SinkhornDistance(torch.nn.Module):
+    """
+    Computes the entropy-regularized transport cost between distributions. 
+    I.e. imagine moving something from one distribution to match another in the most efficient way possible.
+    Depending on how much mass has to be moved and the distance it has to travel the transport cost will vary.
+    The cost of moving one unit of mass from one location to another is defined by the (squared) distance between the locations.
+    Integrating over all masses and journeys gives the total transport cost.
+    
+    Args:
+        eps (float): regularization coefficient
+        max_iter (int): maximum number of Sinkhorn iterations
+        patch_size (int): patch size used to flatten the density maps
+        reduction (string, optional): Specifies the reduction to apply to the output:
+            'none' | 'mean' | 'sum'. 'none': no reduction will be applied,
+            'mean': the sum of the output will be divided by the number of
+            elements in the output, 'sum': the output will be summed. Default: 'none'
+        tolerance (float): maximum allowed L1 marginal error for convergence
+        check_every (int): check marginal error after this many iterations
+    Shape:
+        - Inputs: :math:`(N, 4096)` for both density maps
+        - Output: per-sample cost :math:`(N)`, transport plan
+          :math:`(N, 4096, 4096)`, and cost matrix :math:`(4096, 4096)`
+    """
+    def __init__(
+        self, patch_size, eps=1e-2, max_iter=100, reduction='mean',
+        tolerance=1e-3, check_every=10,
+    ):
+        super().__init__()
+        if not math.isfinite(eps) or eps <= 0:
+            raise ValueError("eps must be positive")
+        if not isinstance(max_iter, int) or max_iter <= 0:
+            raise ValueError("max_iter must be positive")
+        if not isinstance(patch_size, int) or patch_size <= 0 or 64 % patch_size != 0:
+            raise ValueError("patch_size must be positive and divide 64")
+        if reduction not in ('none', 'mean', 'sum'):
+            raise ValueError("reduction must be 'none', 'mean', or 'sum'")
+        if not math.isfinite(tolerance) or tolerance <= 0:
+            raise ValueError("tolerance must be positive")
+        if not isinstance(check_every, int) or check_every <= 0:
+            raise ValueError("check_every must be positive")
+
+        self.eps = eps
+        self.max_iter = max_iter
+        self.reduction = reduction
+        self.tolerance = tolerance
+        self.check_every = check_every
+        self.n_elements = 64 * 64
+
+        # create cost matrix based on patch coordinates
+        k = torch.arange(self.n_elements)
+        n = 64 // patch_size
+        p, q = k // patch_size**2, k % patch_size**2
+        row = (p // n) * patch_size + q // patch_size
+        col = (p % n) * patch_size + q % patch_size
+
+        coords = torch.stack((row, col), dim=1).float() / 64 # normalized coordinates
+        cost_matrix = ((coords[:, None, :] - coords[None, :, :]) ** 2).sum(-1) # transport cost = squared euclidean distance
+        self.register_buffer("C", cost_matrix, persistent=False)
+
+    def forward(self, mu, nu):
+        """
+        Args:
+            mu, nu: marginal distributions with shape (batch, 4096), 
+            i.e. pred and target densities.
+        """
+        
+        if mu.ndim != 2 or nu.ndim != 2:
+            raise ValueError("mu and nu must have shape (batch, 4096)")
+        if mu.shape != nu.shape or mu.shape[1] != self.n_elements:
+            raise ValueError("mu and nu must have the same shape (batch, 4096)")
+        if mu.device != nu.device or mu.dtype != nu.dtype:
+            raise ValueError("mu and nu must have the same device and dtype")
+        if mu.device != self.C.device:
+            raise ValueError("move SinkhornDistance to the same device as mu and nu")
+        if not mu.is_floating_point() or not nu.is_floating_point():
+            raise TypeError("mu and nu must be floating-point tensors")
+        if not torch.isfinite(mu).all() or not torch.isfinite(nu).all():
+            raise ValueError("mu and nu must contain only finite values")
+        if (mu < 0).any() or (nu < 0).any():
+            raise ValueError("mu and nu must be nonnegative")
+        if (mu.sum(dim=-1) <= 0).any() or (nu.sum(dim=-1) <= 0).any():
+            raise ValueError("each input map must contain positive total mass")
+
+        # Normalize each map to unit mass; clamp gives zero-density pixels a tiny
+        # positive mass so the logarithmic updates remain finite.
+        mu = mu.clamp_min(1e-8)
+        nu = nu.clamp_min(1e-8)
+        mu = mu / mu.sum(dim=-1, keepdim=True)
+        nu = nu / nu.sum(dim=-1, keepdim=True)
+
+        batch_size = mu.shape[0]
+
+        a, b = mu, nu
+
+        u, v = self._sinkhorn(a, b)
+        pi = torch.exp(self.M(u, v)) # transport plan, each entry pi_ij represents the amount of mass moved from pixel i to pixel j
+
+        cost = torch.sum(pi * self.C, dim=(-2, -1))
+
+        if self.reduction == 'mean':
+            cost = cost.mean()
+        elif self.reduction == 'sum':
+            cost = cost.sum()
+
+        return cost
+
+    def _sinkhorn_step(self, a, b, u, v):
+        u = self.eps * (torch.log(a) - torch.logsumexp(self.M(u, v), dim=-1)) + u
+        v = self.eps * (torch.log(b) - torch.logsumexp(self.M(u, v).transpose(-2, -1), dim=-1)) + v
+        return u, v
+
+    def _sinkhorn(self, mu, nu):
+        """Returns the dual potentials u, v (log-domain Sinkhorn iterations)."""
+        u = torch.zeros_like(mu)
+        v = torch.zeros_like(nu)
+
+        return self._iterate(mu, nu, u, v)
+
+    def _iterate(self, mu, nu, u, v):
+        converged = False
+        marginal_error = float('inf')
+        actual_nits = 0
+
+        for i in range(self.max_iter):
+            u, v = self._sinkhorn_step(mu, nu, u, v)
+
+            actual_nits = i + 1
+            if actual_nits % self.check_every == 0 or actual_nits == self.max_iter:
+                with torch.no_grad():
+                    pi_check = torch.exp(self.M(u.detach(), v.detach()))
+                    row_error = (pi_check.sum(dim=-1) - mu.detach()).abs().sum(dim=-1)
+                    col_error = (pi_check.sum(dim=-2) - nu.detach()).abs().sum(dim=-1)
+                    marginal_error = torch.maximum(row_error, col_error).max().item()
+                if marginal_error <= self.tolerance:
+                    converged = True
+                    break
+
+        self.actual_nits = actual_nits
+        self.converged = converged
+        self.marginal_error = marginal_error
+        if not converged:
+            warnings.warn(
+                f"Sinkhorn did not reach marginal tolerance {self.tolerance:g} "
+                f"after {self.max_iter} iterations (error={marginal_error:.3g})",
+                RuntimeWarning,
+            )
+        return u, v
+
+    def M(self, u, v):
+        "Modified cost for logarithmic updates"
+        "$M_{ij} = (-c_{ij} + u_i + v_j) / epsilon$"
+        return (-self.C + u.unsqueeze(-1) + v.unsqueeze(-2)) / self.eps
+
+    @staticmethod
+    def ave(u, u1, tau):
+        "Barycenter subroutine, used by kinetic acceleration through extrapolation."
+        return tau * u + (1 - tau) * u1
