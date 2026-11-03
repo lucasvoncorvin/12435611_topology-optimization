@@ -234,7 +234,7 @@ def optimize(checkpoint: Checkpoint, training_data_dir: Path, validation_data_di
         dataset=TODataset(validation_data_dir, checkpoint.model_spec.patch_size),
         batch_size=checkpoint.training_config.batch_size
     )
-    loss_fn = make_loss(checkpoint.training_config.loss, patch_size=checkpoint.model_spec.patch_size)
+    loss_fn = make_loss(checkpoint.training_config.loss, patch_size=checkpoint.model_spec.patch_size).to(device)
     
     
     
