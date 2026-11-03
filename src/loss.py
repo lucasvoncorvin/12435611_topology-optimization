@@ -196,8 +196,7 @@ class SinkhornDistance(torch.nn.Module):
         check_every (int): check marginal error after this many iterations
     Shape:
         - Inputs: :math:`(N, 4096)` for both density maps
-        - Output: per-sample cost :math:`(N)`, transport plan
-          :math:`(N, 4096, 4096)`, and cost matrix :math:`(4096, 4096)`
+        - Output: entropic transport cost, :math:`(N)` for reduction='none', else scalar
     """
     def __init__(
         self, patch_size, eps=1e-2, max_iter=100, reduction='mean',
@@ -224,16 +223,19 @@ class SinkhornDistance(torch.nn.Module):
         self.check_every = check_every
         self.n_elements = 64 * 64
 
-        # create cost matrix based on patch coordinates
+        # map the patch-ordered flat index to the 64x64 grid position
         k = torch.arange(self.n_elements)
         n = 64 // patch_size
         p, q = k // patch_size**2, k % patch_size**2
         row = (p // n) * patch_size + q // patch_size
         col = (p % n) * patch_size + q % patch_size
+        self.register_buffer("grid_to_patch", torch.argsort(row * 64 + col), persistent=False)
 
-        coords = torch.stack((row, col), dim=1).float() / 64 # normalized coordinates
-        cost_matrix = ((coords[:, None, :] - coords[None, :, :]) ** 2).sum(-1) # transport cost = squared euclidean distance
-        self.register_buffer("C", cost_matrix, persistent=False)
+        # The squared euclidean cost on the grid is separable:
+        # C[(i,j),(k,l)] = c[i,k] + c[j,l], so the dense (4096, 4096) matrix is never built.
+        coords_1d = torch.arange(64).float() / 64 # normalized coordinates
+        cost_1d = (coords_1d[:, None] - coords_1d[None, :]) ** 2
+        self.register_buffer("C_1d", cost_1d, persistent=False)
 
     def forward(self, mu, nu):
         """
@@ -248,7 +250,7 @@ class SinkhornDistance(torch.nn.Module):
             raise ValueError("mu and nu must have the same shape (batch, 4096)")
         if mu.device != nu.device or mu.dtype != nu.dtype:
             raise ValueError("mu and nu must have the same device and dtype")
-        if mu.device != self.C.device:
+        if mu.device != self.C_1d.device:
             raise ValueError("move SinkhornDistance to the same device as mu and nu")
         if not mu.is_floating_point() or not nu.is_floating_point():
             raise TypeError("mu and nu must be floating-point tensors")
@@ -268,12 +270,16 @@ class SinkhornDistance(torch.nn.Module):
 
         batch_size = mu.shape[0]
 
-        a, b = mu, nu
+        a = mu[:, self.grid_to_patch].view(batch_size, 64, 64)
+        b = nu[:, self.grid_to_patch].view(batch_size, 64, 64)
 
-        u, v = self._sinkhorn(a, b)
-        pi = torch.exp(self.M(u, v)) # transport plan, each entry pi_ij represents the amount of mass moved from pixel i to pixel j
+        # Envelope theorem: at the optimum the gradient of the entropic OT cost w.r.t. a is
+        # the dual potential u, so the iterations need no autograd graph (saves memory).
+        with torch.no_grad():
+            u, v = self._sinkhorn(a.detach(), b.detach())
 
-        cost = torch.sum(pi * self.C, dim=(-2, -1))
+        # dual objective <u, a> + <v, b>: equals the entropic OT cost, gradient flows through a and b
+        cost = (u * a).sum(dim=(-2, -1)) + (v * b).sum(dim=(-2, -1))
 
         if self.reduction == 'mean':
             cost = cost.mean()
@@ -283,8 +289,9 @@ class SinkhornDistance(torch.nn.Module):
         return cost
 
     def _sinkhorn_step(self, a, b, u, v):
-        u = self.eps * (torch.log(a) - torch.logsumexp(self.M(u, v), dim=-1)) + u
-        v = self.eps * (torch.log(b) - torch.logsumexp(self.M(u, v).transpose(-2, -1), dim=-1)) + v
+        # u_ij = eps * (log a_ij - LSE_kl[(-C[(i,j),(k,l)] + v_kl) / eps])
+        u = self.eps * (torch.log(a) - self._log_kernel(v))
+        v = self.eps * (torch.log(b) - self._log_kernel(u))
         return u, v
 
     def _sinkhorn(self, mu, nu):
@@ -305,9 +312,11 @@ class SinkhornDistance(torch.nn.Module):
             actual_nits = i + 1
             if actual_nits % self.check_every == 0 or actual_nits == self.max_iter:
                 with torch.no_grad():
-                    pi_check = torch.exp(self.M(u.detach(), v.detach()))
-                    row_error = (pi_check.sum(dim=-1) - mu.detach()).abs().sum(dim=-1)
-                    col_error = (pi_check.sum(dim=-2) - nu.detach()).abs().sum(dim=-1)
+                    # marginals of the transport plan pi = exp((-C + u + v) / eps)
+                    row_marginal = torch.exp(u / self.eps + self._log_kernel(v))
+                    col_marginal = torch.exp(v / self.eps + self._log_kernel(u))
+                    row_error = (row_marginal - mu).abs().sum(dim=(-2, -1))
+                    col_error = (col_marginal - nu).abs().sum(dim=(-2, -1))
                     marginal_error = torch.maximum(row_error, col_error).max().item()
                 if marginal_error <= self.tolerance:
                     converged = True
@@ -324,10 +333,15 @@ class SinkhornDistance(torch.nn.Module):
             )
         return u, v
 
-    def M(self, u, v):
-        "Modified cost for logarithmic updates"
-        "$M_{ij} = (-c_{ij} + u_i + v_j) / epsilon$"
-        return (-self.C + u.unsqueeze(-1) + v.unsqueeze(-2)) / self.eps
+    def _log_kernel(self, v):
+        """
+        Separable log-domain kernel application for potentials of shape (batch, 64, 64):
+        out_ij = LSE_kl[(-c_ik - c_jl + v_kl) / eps] = LSE_l[-c_jl / eps + LSE_k[(-c_ik + v_kl) / eps]]
+        Peak memory is (batch, 64, 64, 64) instead of (batch, 4096, 4096).
+        """
+        log_k = -self.C_1d / self.eps
+        t = torch.logsumexp(log_k[None, :, :, None] + v[:, None, :, :] / self.eps, dim=2) # (b, i, l)
+        return torch.logsumexp(log_k[None, None, :, :] + t[:, :, None, :], dim=-1) # (b, i, j)
 
     @staticmethod
     def ave(u, u1, tau):
