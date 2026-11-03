@@ -10,6 +10,7 @@ from topoptlab.elements.bilinear_quadrilateral import create_edofMat
 from topoptlab.elements.linear_elasticity_2d import lk_linear_elast_2d
 from topoptlab.fem import assemble_matrix, create_matrixinds
 from src.utils import un_one_hot_encode, postprocess
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +182,7 @@ def evaluate_prediction(predicted, target, load, fixed_dofs, volume_fraction):
         rel_volume_error=float(rel_volume_error(predicted, volume_fraction)),
     )
     
-def evaluate_model(model, dataset):
+def evaluate_model(model, dataset, path_to_model: Path | None = None):
     results = []
     
     model.eval()
@@ -239,4 +240,10 @@ def evaluate_model(model, dataset):
         SampleEvaluations=evaluations
     )
         
+    if path_to_model is not None:
+        path_to_model.parent.mkdir(parents=True, exist_ok=True)
+        path_to_report = path_to_model.with_name(path_to_model.stem + "_report.json")
+        with open(path_to_report, "w") as f:
+            f.write(str(res))
+    
     return res
