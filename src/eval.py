@@ -9,7 +9,7 @@ from scipy.sparse.linalg import spsolve
 from topoptlab.elements.bilinear_quadrilateral import create_edofMat
 from topoptlab.elements.linear_elasticity_2d import lk_linear_elast_2d
 from topoptlab.fem import assemble_matrix, create_matrixinds
-from src.utils import un_one_hot_encode, postprocess
+from src.utils import postprocess
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,7 @@ class ModelEvaluation:
     SampleEvaluations: list[SampleEvaluation]
 
 
+# todo: create a test for this
 def compliance(densities, load, fixed_dofs):
     """Compute the compliance of a given topology"""
 
@@ -124,7 +125,6 @@ def rel_compliance_error(predicted, target, load, fixed_dofs, binarify_densities
         predicted = predicted.round()
         target = target.round()
     
-    # todo: how do we actually compute the compliance????
     c_predicted = compliance(densities=predicted.numpy(), load=load, fixed_dofs=fixed_dofs)
     c_target = compliance(densities=target.numpy(), load=load, fixed_dofs=fixed_dofs)
     

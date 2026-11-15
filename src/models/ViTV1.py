@@ -78,6 +78,8 @@ class ViT_V1(torch.nn.Module):
             Each output corresponds to the concatenated flattened patches of densities in the optimized topology.
         """
 
+        patches = patchify()
+        
         n_samples = x.shape[0]
         
         params = x[:, 0:1+4+4*64].unsqueeze(1) # add one dimension to concatenate along with the patch embeddings

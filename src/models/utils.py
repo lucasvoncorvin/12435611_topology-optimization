@@ -11,16 +11,6 @@ class OrientationMode(StrEnum):
     BOUNDARY_CONDITIONS = "boundary_conditions"
     
 
-
-def _idx_to_coordinates(idx, normalize=False):
-    """translate a node index to its (normalized) coordinates within the grid"""
-    row = idx // 64
-    col = idx % 64
-    if normalize:
-        return row / 64, col / 64
-    else:
-        return row, col
-
 def attention(keys, queries, values):
     """Computes the attention function in batches.
     
@@ -35,9 +25,6 @@ def attention(keys, queries, values):
     scores = (queries @ keys.transpose(-2, -1)) / math.sqrt(queries.shape[-1]) # ! Used ai here to help me with the correct transposition for the matrix multiplication
     weights = torch.softmax(scores, dim=-1)
     return weights @ values
-
-
-
 
 def _positional_encoding(position, dim_encoding, device, dtype):
     """Generates a frequency-based positional encoding for a given position and dimension
@@ -77,6 +64,20 @@ def build_positional_encoding(patch_size, embedding_dims) -> torch.Tensor:
     cols = (positions % side)
     return torch.cat((encode(rows), encode(cols)), dim=1).float()
 
+def build_parameter_vector(load_positions, load_vectors, boundary_conditions, volume_fractions):
+    # todo: write tests for this function
+    """Returns a representation of the load, the boundary conditions and the volume fraction
+    with length 1 + 4 + 4*64 = 261 (volume fraction + load representation + boundary conditions)
+    
+    Args:
+        load_positions (torch.Tensor): batch of load positions.
+        load_directions (torch.Tensor): batch of load directions.
+        boundary_conditions (torch.Tensor): batch of fixed degrees of freedom.
+        volume_fractions (torch.Tensor): batch of volume fractions of the material.
+    """
+    
+    return torch.cat([volume_fractions, load_positions, load_vectors, boundary_conditions], dim=1)
+
 def add_positional_encoding(patches, patch_size, embedding_dims, device, dtype):
     """Adds frequency-based positional encoding to the patch embeddings in place.
     
@@ -96,5 +97,60 @@ def add_positional_encoding(patches, patch_size, embedding_dims, device, dtype):
         patches[:, k, 0:embedding_dims//2] += _positional_encoding(row, embedding_dims//2, device, dtype)
         patches[:,k, embedding_dims//2:embedding_dims] += _positional_encoding(col, embedding_dims//2, device, dtype)
             
+def patchify(images, meta_shape: tuple[int, int], overlap: int):
+    """Divides images into overlapping patches.
 
+    Args:
+        images (torch.Tensor): Tensor of shape (batch_size, height, width, channels)
+        meta_shape (tuple[int, int]): Shape of the meta grid (height, width)
+        overlap (int): Number of extra pixels per patch dimension, centered as closely
+            as integer pixels allow. The image is zero-padded at its edges so boundary
+            patches have the same dimensions.
 
+    Returns:
+        torch.Tensor: Tensor of shape (batch_size, n_patches_x, n_patches_y, patch_height, patch_width, channels)
+    """
+    if images.ndim != 4:
+        raise ValueError("images must have shape (batch_size, height, width, channels)")
+    if len(meta_shape) != 2 or meta_shape[0] <= 0 or meta_shape[1] <= 0:
+        raise ValueError("meta_shape must contain two positive dimensions")
+    if overlap < 0:
+        raise ValueError("overlap must be non-negative")
+
+    batch_size, height, width, channels = images.shape
+    if height % meta_shape[0] != 0 or width % meta_shape[1] != 0:
+        raise ValueError("Image dimensions must be divisible by meta grid shape")
+
+    patch_base_height = height // meta_shape[0]
+    patch_base_width = width // meta_shape[1]
+
+    if overlap == 0:
+        return (
+            images.reshape(
+                batch_size,
+                meta_shape[0],
+                patch_base_height,
+                meta_shape[1],
+                patch_base_width,
+                channels,
+            )
+            .permute(0, 1, 3, 2, 4, 5)
+            .contiguous()
+        )
+
+    
+    patch_height = patch_base_height + overlap
+    patch_width = patch_base_width + overlap
+    before = overlap // 2
+    after = overlap - before
+    padded_images = torch.nn.functional.pad(
+        images,
+        (0, 0, before, after, before, after),
+    )
+    return ( # ! AI helped here a bit with all the unfold, permute stuff
+        padded_images.unfold(1, patch_height, patch_base_height)
+        .unfold(2, patch_width, patch_base_width)
+        .permute(0, 1, 2, 4, 5, 3)
+        .contiguous()
+    )
+    
