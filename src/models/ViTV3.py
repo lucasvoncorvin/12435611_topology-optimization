@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import math
 from .utils import add_positional_encoding, attention, build_positional_encoding, build_parameter_vector, patchify
-from ..utils import BatchModelInput, BatchModelOutput
+from ..model_types import BatchModelInput, BatchModelOutput, ModelSpec
 
 
 class ViT_V3(torch.nn.Module):
@@ -13,33 +13,39 @@ class ViT_V3(torch.nn.Module):
     """
     def __init__(
             self,
-            embedding_dims,
-            query_dims,
-            n_attention_blocks,
-            n_attention_heads,
-            patch_side_lenth,
-            n_channels,
+            model_spec: ModelSpec,
         ):
         
+        assert model_spec.model_name == "vit_v3"
         assert __file__.endswith(self.__class__.__name__[-2::] + ".py") # just check I actually made sure to align the versions (up to V9)
-        assert embedding_dims % n_attention_heads == 0, "Embedding dimensions must be divisible by the number of attention heads"
-        assert query_dims % n_attention_heads == 0, "Query dimensions must be divisible by the number of attention heads"
+        assert model_spec.embedding_dims % model_spec.n_attention_heads == 0, "Embedding dimensions must be divisible by the number of attention heads"
+        assert model_spec.query_dims % model_spec.n_attention_heads == 0, "Query dimensions must be divisible by the number of attention heads"
         
         super(ViT_V3, self).__init__()
+
+        if model_spec.patch_overlap != 0:
+            raise ValueError("ViT_V3 does not support patch overlap")
+        training_mode_config = model_spec.training_mode_config
+        if training_mode_config and any((
+            training_mode_config.attention_output_dropout_rate,
+            training_mode_config.mlp_output_dropout_rate,
+            training_mode_config.attention_hidden_dropout_rate,
+        )):
+            raise ValueError("ViT_V3 does not support dropout configuration")
         
         # create seed for reproducibility
         torch.manual_seed(42)
         
         # hyperparameters
-        self.embedding_dims = embedding_dims
-        self.query_dims = query_dims
-        self.n_attention_blocks = n_attention_blocks
-        self.n_attention_heads = n_attention_heads
+        self.embedding_dims = model_spec.embedding_dims
+        self.query_dims = model_spec.query_dims
+        self.n_attention_blocks = model_spec.n_attention_blocks
+        self.n_attention_heads = model_spec.n_attention_heads
         
-        self.n_patches = (64 // patch_side_lenth) * (64 // patch_side_lenth) 
-        self.patch_side_lenth = patch_side_lenth
+        self.n_patches = (64 // model_spec.patch_size) * (64 // model_spec.patch_size) 
+        self.patch_side_lenth = model_spec.patch_size
         self.pixels_per_patch = self.patch_side_lenth**2
-        self.n_channels = n_channels
+        self.n_channels = 2
         
         self.embedding_dims_head = self.embedding_dims // self.n_attention_heads
         self.query_dims_head = self.query_dims // self.n_attention_heads
@@ -83,7 +89,7 @@ class ViT_V3(torch.nn.Module):
         # positional encodings 
         self.register_buffer(
             "positional_encoding",
-            build_positional_encoding(patch_side_lenth, embedding_dims),
+            build_positional_encoding(self.patch_side_lenth, self.embedding_dims),
             persistent=False,
         )
         
@@ -115,7 +121,7 @@ class ViT_V3(torch.nn.Module):
 
         patches = patchify(
             images=images, # for we can use the stress field as the input image directly, but if we want more fields we must create the multi-channel image first
-            meta_shape=(64 // self.patch_side_lenth, 64 // self.patch_side_lenth), 
+            grid_shape=(64 // self.patch_side_lenth, 64 // self.patch_side_lenth),
             overlap=0
         ) # -> (batch_size, n_patches_x, n_patches_y, patch_height, patch_width, channels)
         

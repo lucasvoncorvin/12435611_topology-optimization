@@ -5,19 +5,14 @@ from pathlib import Path
 from enum import StrEnum
 import math
 from .utils import (
-    Sample,
-    ModelInput,
-    ModelOutput,
     encode_boundary_conditions,
     idx_to_coordinates,
     normalize_sample
 )
+from .model_types import ModelInput, ModelOutput, Sample
 import logging
 
 logger = logging.getLogger(__name__)
-
-LABELED_DATA_DIR_PATH = Path(__file__).parent.parent / "data/labeled_data/"
-
 
 DATA_SPLIT = (0.8, 0.1, 0.1)  # train, val, test split ratios
 

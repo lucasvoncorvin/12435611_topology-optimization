@@ -1,8 +1,6 @@
 from time import time
 from pathlib import Path
 import logging
-import dataclasses
-from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
@@ -10,64 +8,15 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from .models.ViTV1 import ViT_V1
-from .models.ViTV2 import ViT_V2
-from .models.ViTV3 import ViT_V3
-from .models.ViTV4 import ViT_V4
 from .dataset import TODataset, Mode
 from .loss import BinaryMissmatchLoss, CustomLoss, ModularLoss, SinkhornDistance
-from .utils import collate_samples
-from .types import ModelSpec, ModelTrainingModeConfig
+from .utils import MODEL_REGISTRY, build_model, collate_samples
+from .model_types import ModelSpec, ModelTrainingModeConfig, Checkpoint, TrainingResults, TrainingConfig
 
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-
-MODEL_REGISTRY = {
-    "vit_v1": ViT_V1,
-    "vit_v2": ViT_V2,
-    "vit_v3": ViT_V3,
-    "vit_v4": ViT_V4
-}
-
-@dataclass
-class Hyperparameters:
-    n_epochs: int
-    embedding_dims: int
-    query_dims: int
-    n_attention_blocks: int
-    n_attention_heads: int
-    optimizer: str
-    learning_rate: float
-    loss: str
-    # batch_size ?
-    # n_training_samples ?
-    patch_size: int 
-    patch_overlap: int
-
-@dataclass
-class TrainingConfig:
-    optimizer: str
-    learning_rate: float
-    batch_size: int
-    loss: str
-    n_epochs: int # max number of epochs
-
-
-@dataclass
-class TrainingResults:
-    train_losses: list
-    validation_losses: list
-@dataclass
-class Checkpoint:
-    path: Path | None  # path to the checkpoint file, None if starting from scratch
-    model_spec: ModelSpec
-    training_config: TrainingConfig
-    epoch: int | None  # current epoch, None if starting from scratch
-    model_state_dict: dict | None  # none if starting from scratch
-    optimizer_state_dict: dict | None 
-    results: TrainingResults | None
 
 def plot_training_history(train_losses, validation_losses, path=None, show=True):
     import matplotlib.pyplot as plt
@@ -86,43 +35,7 @@ def plot_training_history(train_losses, validation_losses, path=None, show=True)
     if show:
         plt.show()
 
-def save_checkpoint(checkpoint: Checkpoint, plot: bool = False, log: bool = True):
-    if checkpoint.path is None:
-        raise ValueError("Checkpoint path is None. Cannot save checkpoint.")
-    if checkpoint.results is None:
-        checkpoint.results = TrainingResults(train_losses=[], validation_losses=[])
-        logger.warning("Checkpoint results are None.")
-    checkpoint.path.parent.mkdir(parents=True, exist_ok=True)
-    if log:
-        logging.info(f"Saving checkpoint with to {checkpoint.path}")
-    torch.save({
-        "model_spec": dataclasses.asdict(checkpoint.model_spec),
-        "training_config": dataclasses.asdict(checkpoint.training_config),
-        "epoch": checkpoint.epoch,
-        "model_state_dict": checkpoint.model_state_dict,
-        "optimizer_state_dict": checkpoint.optimizer_state_dict,
-        "results": dataclasses.asdict(checkpoint.results),
-    }, checkpoint.path)
-    if plot:
-        plot_training_history(checkpoint.results.train_losses, checkpoint.results.validation_losses, path=checkpoint.path.with_suffix(".png"), show=False)
-    
-def load_checkpoint(filepath: Path, device = "cpu") -> Checkpoint:
-    # if model is checkpoint, load the checkpoint data
-    logging.info(f"Loading checkpoint from {filepath}")
-    checkpoint_data = torch.load(filepath, map_location=device)
-    model_spec_data = dict(checkpoint_data["model_spec"])
-    if isinstance(model_spec_data.get("training_mode_config"), dict):
-        model_spec_data["training_mode_config"] = ModelTrainingModeConfig(**model_spec_data["training_mode_config"])
-    checkpoint = Checkpoint(
-        path=filepath,
-        model_spec=ModelSpec(**model_spec_data),
-        training_config=TrainingConfig(**checkpoint_data["training_config"]),
-        epoch=checkpoint_data["epoch"],
-        model_state_dict=checkpoint_data["model_state_dict"],
-        optimizer_state_dict=checkpoint_data["optimizer_state_dict"],
-        results=TrainingResults(**checkpoint_data["results"])
-    )
-    return checkpoint
+
 
 def make_optimizer(optimizer_name: str):
     """Optimizer factory
@@ -137,6 +50,16 @@ def make_optimizer(optimizer_name: str):
         return optim.AdamW
     else:
         raise ValueError(f"Unsupported optimizer: {optimizer_name}")
+    
+def make_lr_scheduler(scheduler_name: str, optimizer: torch.optim.Optimizer, **kwargs):
+    """Learning rate scheduler factory
+    
+    returns the corresponding learning rate scheduler based on the scheduler_name provided.
+    """
+    if scheduler_name == "ReduceLROnPlateau":
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, **kwargs)
+    else:
+        raise ValueError(f"Unsupported learning rate scheduler: {scheduler_name}")
 
 def make_loss(loss_name: str, patch_size=None):
     """Loss function factory
@@ -167,10 +90,17 @@ def make_loss(loss_name: str, patch_size=None):
         if not patch_size:
             raise ValueError("patch_size must be provided for custom loss functions")
         return SinkhornDistance(patch_size=patch_size)
-    if loss_name == "mse_binary_mismatch_01": # MSE loss combined with 10% binary mismatch
+    if loss_name.startswith("mse_binary_mismatch_"): # MSE loss combined with binary mismatch
+        weight_str = loss_name.split("_")[-1] 
+        if weight_str not in ["01", "02", "03", "04", "05", "06", "07", "08", "09"]:
+            raise ValueError(f"Invalid weight for mse_binary_mismatch: {weight_str}")
+        try:
+            weight = float(weight_str) / 10
+        except ValueError:
+            raise ValueError(f"Invalid weight for mse_binary_mismatch: {weight_str}")
         return ModularLoss(
             loss_fns=torch.nn.ModuleList([nn.MSELoss(), BinaryMissmatchLoss()]),
-            weights=[0.9, 0.1]
+            weights=[1-weight, weight]
         )
     
     else:
@@ -265,9 +195,12 @@ def optimize(checkpoint: Checkpoint, npz_path: Path, custom_training_subdir: Pat
     loss_fn = make_loss(checkpoint.training_config.loss, patch_size=checkpoint.model_spec.patch_size).to(device)
     
     # Model
-    vit = MODEL_REGISTRY[checkpoint.model_spec.model_name](
-       checkpoint.model_spec
-    ).to(device)
+    vit = build_model(checkpoint.model_spec).to(device)
+    
+    # extract dropout rates for logging purposes (they are not used for the older models)
+    attention_output_dropout_rate = getattr(vit, "attention_output_dropout_rate", 0.0)
+    mlp_output_dropout_rate = getattr(vit, "mlp_output_dropout_rate", 0.0)
+    attention_hidden_dropout_rate = getattr(vit, "attention_hidden_dropout_rate", 0.0)
     
     logging.info(f"""Initialized ViT model with 
                  embedding_dims={checkpoint.model_spec.embedding_dims}, 
@@ -275,11 +208,11 @@ def optimize(checkpoint: Checkpoint, npz_path: Path, custom_training_subdir: Pat
                  n_attention_blocks={checkpoint.model_spec.n_attention_blocks}, 
                  n_attention_heads={checkpoint.model_spec.n_attention_heads}, 
                  n_parameters={vit.n_weights}, 
-                 attention_output_dropout_rate={vit.attention_output_dropout_rate}, 
-                 mlp_output_dropout_rate={vit.mlp_output_dropout_rate}, 
-                 attention_hidden_dropout_rate={vit.attention_hidden_dropout_rate}""")
+                 attention_output_dropout_rate={attention_output_dropout_rate},
+                 mlp_output_dropout_rate={mlp_output_dropout_rate},
+                 attention_hidden_dropout_rate={attention_hidden_dropout_rate}""")
     if checkpoint.model_state_dict is not None:
-        logging.info(f"Loading model state from checkpoint: {checkpoint.path}")
+        logging.info("Loading model state from checkpoint.")
         vit.load_state_dict(checkpoint.model_state_dict)
         
 
@@ -289,8 +222,11 @@ def optimize(checkpoint: Checkpoint, npz_path: Path, custom_training_subdir: Pat
         lr=checkpoint.training_config.learning_rate
     )
     if checkpoint.optimizer_state_dict is not None:
-        logging.info(f"Loading optimizer state from checkpoint: {checkpoint.path}")
+        logging.info("Loading optimizer state from checkpoint.")
         optimizer.load_state_dict(checkpoint.optimizer_state_dict)
+    lr_scheduler = None
+    if checkpoint.training_config.lr_scheduler is not None:
+        lr_scheduler = make_lr_scheduler(checkpoint.training_config.lr_scheduler, optimizer)
     logging.info(f"Initialized optimizer {checkpoint.training_config.optimizer} with lr={checkpoint.training_config.learning_rate}")
     
     
@@ -305,22 +241,27 @@ def optimize(checkpoint: Checkpoint, npz_path: Path, custom_training_subdir: Pat
         model_subdir = custom_training_subdir
     if not model_subdir.exists():
         model_subdir.mkdir(parents=True, exist_ok=True)
+    scheduler_string = (
+        f"_{checkpoint.training_config.lr_scheduler}"
+        if checkpoint.training_config.lr_scheduler is not None else ""
+    )
     training_subdir = model_subdir / (
         f"{checkpoint.training_config.optimizer}"
         f"_{checkpoint.training_config.learning_rate}"
+        f"{scheduler_string}"
         f"_{checkpoint.training_config.loss}"
-        f"_datt{vit.attention_output_dropout_rate}"
-        f"_dmlp{vit.mlp_output_dropout_rate}"
+        f"_datt{attention_output_dropout_rate}"
+        f"_dmlp{mlp_output_dropout_rate}"
     )
     training_subdir.mkdir(parents=True, exist_ok=True)
     
-    train_losses = checkpoint.results.train_losses if checkpoint.results is not None else []
-    validation_losses = checkpoint.results.validation_losses if checkpoint.results is not None else []
+    train_losses = checkpoint.results.train_losses
+    validation_losses = checkpoint.results.validation_losses
     
     # select random examples from the validation dataset for TensorBoard visualization
     example_indices = torch.randperm(
         len(validate_dataloader.dataset),
-        generator=torch.Generator().manual_seed(42),
+        generator=torch.Generator().manual_seed(42), # fix a seed for reproducibility
     )[:16].tolist()
     if not example_indices:
         raise ValueError("Cannot select TensorBoard examples from an empty validation dataset.")
@@ -340,10 +281,12 @@ def optimize(checkpoint: Checkpoint, npz_path: Path, custom_training_subdir: Pat
         writer.add_images("Validation/random_samples/target", examples[1].densities.unsqueeze(1), 0)
         best_validation_loss = min(validation_losses) if validation_losses else float("inf")
         for epoch in range(start_epoch + 1, checkpoint.training_config.n_epochs + 1):
-            start_time = time()
+            start_time = time() # for logging epoch duration
             
             train_loss = train(vit, train_dataloader, optimizer, loss_fn, device)
             validation_loss = validate(vit, validate_dataloader, loss_fn, device)
+            if lr_scheduler is not None:
+                lr_scheduler.step(validation_loss)
             
             # tensorboard logging for validation examples
             if epoch % 10 == 0:
@@ -356,11 +299,10 @@ def optimize(checkpoint: Checkpoint, npz_path: Path, custom_training_subdir: Pat
             writer.add_scalar("Loss/train", train_loss, epoch)
             writer.add_scalar("Loss/validation", validation_loss, epoch)
             
-            logger.info(f"Epoch: {epoch} | Time: {time() - start_time:.2f}s | Train Loss: {train_loss:.5f} | Validation Loss {validation_loss:.5f} | Delta {validation_loss-train_loss:.5f}")
+            logger.info(f"Epoch: {epoch} | Time: {time() - start_time:.2f}s | Train Loss: {train_loss:.5f} | Validation Loss {validation_loss:.5f} | Delta {validation_loss-train_loss:.5f} | LR Scheduler: {checkpoint.training_config.lr_scheduler if checkpoint.training_config.lr_scheduler is not None else 'None'}")
             
             # some checkpoints at specific epochs
             checkpoint = Checkpoint(
-                path=training_subdir / f"latest.pth",
                 model_spec=checkpoint.model_spec,
                 epoch=epoch,
                 model_state_dict=vit.state_dict(),
@@ -371,17 +313,19 @@ def optimize(checkpoint: Checkpoint, npz_path: Path, custom_training_subdir: Pat
                     validation_losses=validation_losses
                 ),
             )
-            save_checkpoint(checkpoint, log=False)
+            checkpoint.save(training_subdir / "latest.pth")
             # save every 50th epoch by default (to compare progress)
             if epoch % 50 == 0:
-                checkpoint.path = training_subdir / f"epoch_{epoch}.pth"
-                save_checkpoint(checkpoint)
+                epoch_checkpoint_path = training_subdir / f"epoch_{epoch}.pth"
+                logging.info("Saving checkpoint to %s", epoch_checkpoint_path)
+                checkpoint.save(epoch_checkpoint_path)
             
             # save best checkpoint based on validation loss
             if validation_loss < best_validation_loss and epoch > 10: # first 10 epochs are useless (i think)
                 best_validation_loss = validation_loss
-                checkpoint.path = training_subdir / f"best.pth"
-                save_checkpoint(checkpoint) 
+                best_checkpoint_path = training_subdir / "best.pth"
+                logging.info("Saving checkpoint to %s", best_checkpoint_path)
+                checkpoint.save(best_checkpoint_path)
             
     finally:
         writer.close()
@@ -407,8 +351,9 @@ if __name__ == "__main__":
     if checkpoint_file is not None:
         if not checkpoint_file.exists():
             raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_file}")
-        checkpoint = load_checkpoint(checkpoint_file)
-        start_epoch = checkpoint.epoch if checkpoint.results is not None else 0
+        logging.info(f"Loading checkpoint from {checkpoint_file}")
+        checkpoint = Checkpoint.load(checkpoint_file)
+        start_epoch = checkpoint.epoch
         logger.info(f"Resuming training from epoch {start_epoch}")
 
         # next_stage = TrainingConfig(
@@ -435,7 +380,7 @@ if __name__ == "__main__":
             embedding_dims=128,
             query_dims=128,
             n_attention_blocks=6, # layers, I dont know why I called them blocks
-            n_attention_heads=4,
+            n_attention_heads=2,
             patch_size=16,
             patch_overlap=2,
             training_mode_config=ModelTrainingModeConfig(
@@ -452,16 +397,15 @@ if __name__ == "__main__":
             batch_size=256,
             optimizer="adam",
             learning_rate=0.0003,
-            loss="mse_binary_mismatch_01",
+            loss="mse_binary_mismatch_05",
+            # lr_scheduler="ReduceLROnPlateau"
         )
         checkpoint = Checkpoint(
-            path=None,
             epoch=0,
             model_spec=model_spec,
             model_state_dict=None,
             optimizer_state_dict=None,
             training_config=training_config,
-            results=None
         )
     
 

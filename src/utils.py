@@ -1,58 +1,32 @@
 
-from dataclasses import dataclass
 from unicodedata import mirrored
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from torch import nn
 
+from .models.ViTV1 import ViT_V1
+from .models.ViTV2 import ViT_V2
+from .models.ViTV3 import ViT_V3
+from .models.ViTV4 import ViT_V4
+from .model_types import (
+    BatchModelInput,
+    BatchModelOutput,
+    Checkpoint,
+    ModelInput,
+    ModelOutput,
+    ModelSpec,
+)
 
-
+MODEL_REGISTRY = {
+    "vit_v1": ViT_V1,
+    "vit_v2": ViT_V2,
+    "vit_v3": ViT_V3,
+    "vit_v4": ViT_V4
+}
     
-
-@dataclass
-class ModelInput:
-    stress: torch.Tensor # (64,64)
-    strain_energy: torch.Tensor # (64,64)
-    volume_fraction: torch.Tensor # (1,)
-    load_position: torch.Tensor # (2,) normalized coordinates [x, y] within the grid
-    load_vector: torch.Tensor # (2,) normalized vector [fx, fy] within the grid
-    boundary_conditions: torch.Tensor # (256,) one-hot encoded boundary mask, 1 fixes both displacement components
-    
-@dataclass
-class ModelOutput:
-    density: torch.Tensor # (64,64)
-    
-@dataclass
-class Sample:
-    input: ModelInput
-    output: ModelOutput
-
-@dataclass
-class BatchModelInput:
-    stresses: torch.Tensor # (batch_size, 64, 64)
-    strain_energies: torch.Tensor # (batch_size, 64, 64)
-    volume_fractions: torch.Tensor # (batch_size, 1)
-    load_positions: torch.Tensor # (batch_size, 2)
-    load_vectors: torch.Tensor # (batch_size, 2)
-    boundary_conditions: torch.Tensor # (batch_size, 256)
-    
-    def to(self, device: torch.device): # Move all tensors to the specified device
-        self.stresses = self.stresses.to(device)
-        self.strain_energies = self.strain_energies.to(device)
-        self.volume_fractions = self.volume_fractions.to(device)
-        self.load_positions = self.load_positions.to(device)
-        self.load_vectors = self.load_vectors.to(device)
-        self.boundary_conditions = self.boundary_conditions.to(device)
-        return self
-    
-@dataclass
-class BatchModelOutput:
-    densities: torch.Tensor # (batch_size, 64, 64)
-
-    def to(self, device: torch.device): # Move all tensors to the specified device
-        self.densities = self.densities.to(device)
-        return self
 
 def _rotate_boundary_conditions(boundary_conditions: torch.Tensor, n_rotations: int) -> torch.Tensor:
     """Rotate the 1 hot encoded boundary conditions tensor by 90 degrees k times."""
@@ -194,6 +168,8 @@ def encode_boundary_conditions(fixed_dofs):
 def collate_samples(
     batch: list[tuple[ModelInput, ModelOutput]],
 ) -> tuple[BatchModelInput, BatchModelOutput]:
+    """Combine a batch of individual samples into batched model input and output."""
+    
     inputs, outputs = zip(*batch)
 
     batched_input = BatchModelInput(
@@ -249,107 +225,22 @@ def boundary_node_indices() -> list[int]:
     ]
     
 
-def patchify(image: torch.Tensor, patch_size: int, overlap: int = 0) -> torch.Tensor:
-    # todo: write test for this function
-    """Converts image of shape (..., 64, 64) into consecutive patches of shape (..., n_patches, patch_size, patch_size)
-    
-    if overlap != 0: the patches will have the specified number of overlapping pixels along each dimension.
+def build_model(model_spec: ModelSpec) -> nn.Module:
+    """Construct a registered model from the current model specification."""
+    model_class = MODEL_REGISTRY.get(model_spec.model_name)
+    if model_class is None:
+        raise ValueError(f"Model {model_spec.model_name} not found in registry")
+    return model_class(model_spec)
+
+
+def load_model_from_checkpoint_path(checkpoint_path: Path, device: torch.device = torch.device("cpu")) -> nn.Module:
     """
-    
-    if image.shape[-2:] != (64, 64):
-        raise ValueError("Expected image dimensions (64, 64)")
-    if patch_size <= 0 or (64 % patch_size != 0 and overlap == 0):
-        raise ValueError("Patch size must be positive and divide 64")
-    if overlap != 0:
-        raise NotImplementedError("Overlapping patches are not yet implemented")
+    Load a model from a checkpoint.
 
-    n = 64 // patch_size
-    leading_shape = image.shape[:-2]
-    return image.reshape(*leading_shape, n, patch_size, n, patch_size).transpose(-3, -2).reshape(*leading_shape, n*n, patch_size, patch_size) # ! ai helped me with the reshape stuff, since I didnt seem to get it right
+    checkpoint: the checkpoint containing the model specification and state dict
+    device: the device to load the model onto (default: CPU)
 
-
-def unpatchify(flattened_image: torch.Tensor, patch_size: int) -> torch.Tensor:
-    """Reconstruct 64x64 image(s) from flattened consecutive patches."""
-    if patch_size <= 0 or 64 % patch_size != 0:
-        raise ValueError("Patch size must be positive and divide 64")
-    if flattened_image.ndim == 0 or flattened_image.shape[-1] != 64 * 64:
-        raise ValueError("Expected flattened image(s) with 4096 values each")
-
-    n = 64 // patch_size
-    leading_shape = flattened_image.shape[:-1]
-
-    return (
-        flattened_image.reshape(*leading_shape, n, n, patch_size, patch_size)
-        .transpose(-3, -2)
-        .reshape(*leading_shape, 64, 64)
-    )
-
-def _validate_sample(sample: torch.Tensor) -> None:
-    expected_size = 1 + 4 + 4 * 64 + 64 * 64
-    if sample.ndim != 1 or sample.numel() != expected_size:
-        raise ValueError(f"sample must be a flat tensor with {expected_size} values")
-    
-
-    
-
-def preprocess(volume_fraction, load, fixed_dofs, stress, patch_size):
-    """returns a sample for the model"""
-    params = params_vectors(load, fixed_dofs, volume_fraction)
-    angle = orientation_angle(params[1:3])
-    sample = torch.cat([params, stress.flatten()])
-    for _ in range(angle):
-        sample = rotate_sample(sample)
-    sample[5+4*64:] = patchify(sample[5+4*64:].reshape(64, 64), patch_size).flatten()
-
-    return sample
-
-def postprocess(prediction: torch.Tensor, angle: int, patch_size: int, load=None, fixed_dofs_one_hot=None, binarify_densities: bool = False):
+    Returns the loaded model as an nn.Module.
     """
-    Postprocess a sample from the model.
-
-    prediction: the output sample tensor from the model
-    patch_size: the size of the patches used during preprocessing
-    load: the load vector from rotated sample (optional)
-    fixed_dofs_one_hot: one-hot encoding of the fixed degrees of freedom (optional)
-    angle: the angle of rotation applied during preprocessing
-    binarify_densities: if true, the density values will be rounded to 0 or 1 (as int)
-
-    Returns the postprocessed sample as a tuple containing:
-    - the prediction tensor
-    - the load vector (if provided, otherwise None)
-    - the fixed degrees of freedoms un-one-hot encoded (if provided, otherwise None)
-    """
-    
-    
-    # unpatchify
-    prediction = unpatchify(prediction, patch_size)
-    
-    # unrotate    
-    if load is None and fixed_dofs_one_hot is None:
-        for _ in range(4 - angle):
-            prediction = prediction.rot90(1, [0, 1])
-    
-    if load is not None or fixed_dofs_one_hot is not None:
-        sample = torch.cat([torch.tensor([0.0]), load, fixed_dofs_one_hot, prediction.flatten()])
-        for _ in range(4 - angle):
-            sample = rotate_sample(sample)
-        
-        prediction = sample[5+4*64:].reshape(64, 64)
-        
-        if load is not None:
-            load = sample[1:5]
-        if fixed_dofs_one_hot is not None:
-            fixed_dofs_one_hot = sample[5:5+4*64]
-            # un-one-hot-encode the fixed degrees of freedom to return them to their original form
-            fixed_dofs = un_one_hot_encode(fixed_dofs_one_hot).detach().cpu().numpy()
-            
-        
-
-        
-    # binarify if requested
-    if binarify_densities:
-        prediction = (prediction > 0.5).int()
-        
-    res = (prediction, load, fixed_dofs if fixed_dofs_one_hot is not None else None)
-    
-    return res
+    checkpoint = Checkpoint.load(checkpoint_path)
+    return checkpoint.get_model(device=device)

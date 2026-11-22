@@ -97,12 +97,12 @@ def add_positional_encoding(patches, patch_size, embedding_dims, device, dtype):
         patches[:, k, 0:embedding_dims//2] += _positional_encoding(row, embedding_dims//2, device, dtype)
         patches[:,k, embedding_dims//2:embedding_dims] += _positional_encoding(col, embedding_dims//2, device, dtype)
             
-def patchify(images, meta_shape: tuple[int, int], overlap: int):
+def patchify(images, grid_shape: tuple[int, int], overlap: int):
     """Divides images into overlapping patches.
 
     Args:
         images (torch.Tensor): Tensor of shape (batch_size, height, width, channels)
-        meta_shape (tuple[int, int]): Shape of the meta grid (height, width)
+        grid_shape (tuple[int, int]): Number of patches along image height and width
         overlap (int): Number of extra pixels per patch dimension, centered as closely
             as integer pixels allow. The image is zero-padded at its edges so boundary
             patches have the same dimensions.
@@ -112,25 +112,25 @@ def patchify(images, meta_shape: tuple[int, int], overlap: int):
     """
     if images.ndim != 4:
         raise ValueError("images must have shape (batch_size, height, width, channels)")
-    if len(meta_shape) != 2 or meta_shape[0] <= 0 or meta_shape[1] <= 0:
-        raise ValueError("meta_shape must contain two positive dimensions")
+    if len(grid_shape) != 2 or grid_shape[0] <= 0 or grid_shape[1] <= 0:
+        raise ValueError("grid_shape must contain two positive dimensions")
     if overlap < 0:
         raise ValueError("overlap must be non-negative")
 
     batch_size, height, width, channels = images.shape
-    if height % meta_shape[0] != 0 or width % meta_shape[1] != 0:
-        raise ValueError("Image dimensions must be divisible by meta grid shape")
+    if height % grid_shape[0] != 0 or width % grid_shape[1] != 0:
+        raise ValueError("Image dimensions must be divisible by grid shape")
 
-    patch_base_height = height // meta_shape[0]
-    patch_base_width = width // meta_shape[1]
+    patch_base_height = height // grid_shape[0]
+    patch_base_width = width // grid_shape[1]
 
     if overlap == 0:
         return (
             images.reshape(
                 batch_size,
-                meta_shape[0],
+                grid_shape[0],
                 patch_base_height,
-                meta_shape[1],
+                grid_shape[1],
                 patch_base_width,
                 channels,
             )
@@ -138,7 +138,6 @@ def patchify(images, meta_shape: tuple[int, int], overlap: int):
             .contiguous()
         )
 
-    
     patch_height = patch_base_height + overlap
     patch_width = patch_base_width + overlap
     before = overlap // 2
@@ -152,5 +151,21 @@ def patchify(images, meta_shape: tuple[int, int], overlap: int):
         .unfold(2, patch_width, patch_base_width)
         .permute(0, 1, 2, 4, 5, 3)
         .contiguous()
+    )
+
+
+def unpatchify_grid(patches: torch.Tensor) -> torch.Tensor:
+    """Reconstruct batched 64x64 images from non-overlapping patch grids."""
+    if patches.ndim != 5:
+        raise ValueError("patches must have shape (batch, grid_height, grid_width, patch_height, patch_width)")
+
+    batch_size, grid_height, grid_width, patch_height, patch_width = patches.shape
+    if grid_height * patch_height != 64 or grid_width * patch_width != 64:
+        raise ValueError("Patch grid dimensions must reconstruct a 64x64 image")
+
+    return (
+        patches.permute(0, 1, 3, 2, 4)
+        .contiguous()
+        .reshape(batch_size, 64, 64)
     )
     

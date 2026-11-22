@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 import math
-from .utils import add_positional_encoding, attention, build_positional_encoding
+from .utils import attention, build_parameter_vector, build_positional_encoding, patchify, unpatchify_grid
+from ..model_types import BatchModelInput, BatchModelOutput, ModelSpec
 
 
 class ViT_V2(torch.nn.Module):
@@ -25,34 +26,46 @@ class ViT_V2(torch.nn.Module):
     Added MLP after each attention block.
         
     """
-    def __init__(
-            self,
-            embedding_dims,
-            query_dims,
-            n_attention_blocks,
-            n_attention_heads,
-            patch_size,
-        ):
+    def __init__(self, model_spec: ModelSpec):
         
+        assert model_spec.model_name == "vit_v2"
         assert __file__.endswith(self.__class__.__name__[-2::] + ".py") # just check I actually made sure to align the versions (up to V9)
-        assert embedding_dims % n_attention_heads == 0, "Embedding dimensions must be divisible by the number of attention heads"
-        assert query_dims % n_attention_heads == 0, "Query dimensions must be divisible by the number of attention heads"
+        assert model_spec.embedding_dims % model_spec.n_attention_heads == 0, "Embedding dimensions must be divisible by the number of attention heads"
+        assert model_spec.query_dims % model_spec.n_attention_heads == 0, "Query dimensions must be divisible by the number of attention heads"
         
         super(ViT_V2, self).__init__()
-        
+
+        if model_spec.patch_size <= 0 or 64 % model_spec.patch_size != 0:
+            raise ValueError("patch_size must be positive and divide 64")
+        if model_spec.patch_overlap != 0:
+            raise ValueError("ViT_V2 does not support patch overlap")
+        training_mode_config = model_spec.training_mode_config
+        if training_mode_config and any((
+            training_mode_config.attention_output_dropout_rate,
+            training_mode_config.mlp_output_dropout_rate,
+            training_mode_config.attention_hidden_dropout_rate,
+        )):
+            raise ValueError("ViT_V2 does not support dropout configuration")
+
         # create seed for reproducibility
         torch.manual_seed(42)
         
         # hyperparameters
-        self.embedding_dims = embedding_dims
-        self.query_dims = query_dims
-        self.n_attention_blocks = n_attention_blocks
-        self.n_attention_heads = n_attention_heads
-        
-        self.n_patches = (64 // patch_size) * (64 // patch_size) 
-        self.patch_size = patch_size
-        self.elements_per_patch = patch_size**2
-        
+        self.embedding_dims = model_spec.embedding_dims
+        self.query_dims = model_spec.query_dims
+        self.n_attention_blocks = model_spec.n_attention_blocks
+        self.n_attention_heads = model_spec.n_attention_heads
+
+        self.n_patches_per_side = 64 // model_spec.patch_size
+        self.n_patches = self.n_patches_per_side**2
+        self.patch_size = model_spec.patch_size
+        self.patch_overlap = model_spec.patch_overlap
+        self.elements_per_patch = self.patch_size**2
+
+        self.attention_output_dropout_rate = 0.0
+        self.mlp_output_dropout_rate = 0.0
+        self.attention_hidden_dropout_rate = 0.0
+
         self.embedding_dims_head = self.embedding_dims // self.n_attention_heads
         self.query_dims_head = self.query_dims // self.n_attention_heads
         
@@ -99,7 +112,7 @@ class ViT_V2(torch.nn.Module):
         # positional encodings 
         self.register_buffer(
             "positional_encoding",
-            build_positional_encoding(patch_size, embedding_dims),
+            build_positional_encoding(self.patch_size, self.embedding_dims),
             persistent=False,
         )
         
@@ -107,25 +120,26 @@ class ViT_V2(torch.nn.Module):
         self.n_weights = sum(p.numel() for p in self.parameters() if p.requires_grad) # total number of trainable parameters
                 
         
-    def forward(self, x):
-        """Forward pass of the Vision Transformer.
-
-        Args:
-            x (torch.Tensor): Input tensor of shape (batch_size, 1+4+4*64 + n_patches*elements_per_patch)
-
-        Returns:
-            torch.Tensor: Output tensor of shape (batch_size, n_patches*elements_per_patch)
-            Each output corresponds to the concatenated flattened patches of densities in the optimized topology.
-        """
-
-        n_samples = x.shape[0]
-        
-        params = x[:, 0:1+4+4*64].unsqueeze(1) # add one dimension to concatenate along with the patch embeddings
-        patches = x[:, 1+4+4*64::].reshape(n_samples, self.n_patches, self.elements_per_patch)
+    def forward(self, batch: BatchModelInput) -> BatchModelOutput:
+        """Run ViT_V2 using the batched model input and return a density image."""
+        n_samples = batch.stresses.shape[0]
+        params = build_parameter_vector(
+            load_positions=batch.load_positions,
+            load_vectors=batch.load_vectors,
+            boundary_conditions=batch.boundary_conditions,
+            volume_fractions=batch.volume_fractions,
+        )
+        # Keep the original stress-only encoder so existing V2 checkpoint weights remain compatible.
+        patches = patchify(
+            batch.stresses.unsqueeze(-1),
+            grid_shape=(self.n_patches_per_side, self.n_patches_per_side),
+            overlap=0,
+        )
+        patches = patches.reshape(n_samples, self.n_patches, self.elements_per_patch)
         
     
         # embedding of parameters (load, boundary conditions, volume fraction)
-        param_embeddings = self.linear_param(params) 
+        param_embeddings = self.linear_param(params).unsqueeze(1)
         
         # embedding of patches
         patch_embeddings = self.linear_patch(patches) + self.positional_encoding
@@ -155,7 +169,14 @@ class ViT_V2(torch.nn.Module):
         embeddings = self.final_norm(embeddings)
         res = self.readout(embeddings[:, 1:, :]) # readout for each patch embedding
         
-        return torch.sigmoid(res.flatten(start_dim=1)) # sigmoid to map result to the range [0, 1]
+        patch_grid = res.reshape(
+            n_samples,
+            self.n_patches_per_side,
+            self.n_patches_per_side,
+            self.patch_size,
+            self.patch_size,
+        )
+        return BatchModelOutput(densities=torch.sigmoid(unpatchify_grid(patch_grid)))
     
     
     def name(self):

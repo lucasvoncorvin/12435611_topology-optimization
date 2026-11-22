@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 import math
 from .utils import add_positional_encoding, attention, build_positional_encoding, build_parameter_vector, patchify
-from ..utils import BatchModelInput, BatchModelOutput
-from ..types import ModelSpec
+from ..model_types import BatchModelInput, BatchModelOutput
+from ..model_types import ModelSpec
 
 class ViT_V4(torch.nn.Module):
     """
@@ -131,7 +131,7 @@ class ViT_V4(torch.nn.Module):
 
         patches = patchify(
             images=images, # for we can use the stress field as the input image directly, but if we want more fields we must create the multi-channel image first
-            meta_shape=(64 // self.patch_side_length, 64 // self.patch_side_length), 
+            grid_shape=(64 // self.patch_side_length, 64 // self.patch_side_length),
             overlap=self.patch_overlap
         ) # -> (batch_size, n_patches_x, n_patches_y, patch_height, patch_width, channels)
         
