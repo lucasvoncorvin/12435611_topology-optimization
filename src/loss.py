@@ -169,7 +169,56 @@ class CustomLoss(torch.nn.Module):
         return self.base_loss(pred, target) + self.auxiliary_weight * (vf_loss + fm_loss + ld_loss) # all auxiliary losses weighted equally
     
 
+class ModularLoss(torch.nn.Module):
+    """
+    A modular loss function that combines multiple loss functions with specified weights.
+    """
+    
+    def __init__(self, loss_fns: torch.nn.ModuleList, weights: list[float]):
+        """
+        Args:
+            loss_fns: A list of loss functions to combine.
+            weights: Corresponding weights for each loss function.
+        """
+        assert len(loss_fns) == len(weights), "Number of loss functions must match number of weights"
+        assert isinstance(loss_fns, torch.nn.ModuleList), "loss_fns must be a torch.nn.ModuleList"
+        assert sum(weights) > 0, "Sum of weights must be greater than 0"
+        
+        super(ModularLoss, self).__init__()
+        self.loss_fns = loss_fns
+        # normalize weights to sum to 1
+        self.weights = [w / sum(weights) for w in weights]
+        
+    def forward(self, pred, target, args_list: list[list] | None = None, kwargs_list: list[dict] | None = None):
+        """
+        Args:
+            pred: Predicted output.
+            target: Ground truth output.
+            args_list: List of positional arguments for each loss function. One sublist per loss function.
+            kwargs_list: List of keyword arguments for each loss function. One dictionary per loss function.
+        Returns:
+            Weighted sum of the individual loss functions.
+        """
+        total_loss = 0
+        for i, (loss_fn, weight) in enumerate(zip(self.loss_fns, self.weights)):
+            total_loss += weight * loss_fn(pred, target, *(args_list[i] if args_list is not None else []), **(kwargs_list[i] if kwargs_list is not None else {}))
+        return total_loss
+    
+    def __str__(self):
+        return f"mod({'-'.join([f'{str(loss_fn())}({weight:.2f})' for loss_fn, weight in zip(self.loss_fns, self.weights)])})"
+        
 
+class BinaryMissmatchLoss(torch.nn.Module):
+    """
+    Penalizes values that are not 1 or 0 in the predicted output.
+    
+    """
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, pred, target=None):
+        return torch.mean(pred * (1 - pred))
+    
 # Copyright 2018 Daniel Dazac 
 # MIT Licensed
 # License and source: https://github.com/dfdazac/wassdistance/
