@@ -28,8 +28,8 @@ class TODataset(Dataset):
             npz_path (Path): Path to the NPZ file containing the dataset.
             mode (Mode): Mode of the dataset (train, validate, test).
         """
-        self.normalization_angle = 0
-        self.normalization_chirality = 0
+        self.normalization_angles: list[int] = []
+        self.normalization_chiralities: list[bool] = []
         
         logger.info(f"Initializing Dataset with path {npz_path} in mode {mode}")
         
@@ -90,9 +90,11 @@ class TODataset(Dataset):
                 density=densities[i]
             )
             
-            self.normalization_angle, self.normalization_chirality, input, output = normalize_sample(input, output)
+            rotation, mirrored, input, output = normalize_sample(input, output)
             assert output is not None
             
+            self.normalization_angles.append(rotation)
+            self.normalization_chiralities.append(mirrored)
             self.samples.append(Sample(input=input, output=output))
             
         logger.info("Dataset initialized successfully")
