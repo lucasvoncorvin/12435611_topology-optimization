@@ -7,7 +7,9 @@ import math
 from .utils import (
     encode_boundary_conditions,
     idx_to_coordinates,
-    normalize_sample
+    mirror_sample,
+    normalize_sample,
+    rotate_sample
 )
 from .model_types import ModelInput, ModelOutput, Sample
 import logging
@@ -16,18 +18,42 @@ logger = logging.getLogger(__name__)
 
 DATA_SPLIT = (0.8, 0.1, 0.1)  # train, val, test split ratios
 
+
+def orientation_for_evaluation(orientation: str) -> str:
+    if orientation not in ("normalized", "augment", "none"):
+        raise ValueError(f"Unknown orientation mode: {orientation}")
+    return "none" if orientation == "augment" else orientation
+
+
 class Mode(StrEnum):
     TRAIN = "train"
     VALIDATE = "val"
     TEST = "test"
 
 class TODataset(Dataset):
-    def __init__(self, npz_path: Path,  mode: Mode):
+    def __init__(
+        self,
+        npz_path: Path,
+        mode: Mode,
+        input_scaling: str = "log1p",
+        orientation: str = "normalized",
+    ):
         """
         Args:
             npz_path (Path): Path to the NPZ file containing the dataset.
             mode (Mode): Mode of the dataset (train, validate, test).
+            input_scaling: Apply log1p to stress and strain energy, or keep them raw.
+            orientation: Normalize orientations, augment training samples, or leave them unchanged.
         """
+        if input_scaling not in ("log1p", "raw"):
+            raise ValueError(f"Unknown input scaling: {input_scaling}")
+        if orientation not in ("normalized", "augment", "none"):
+            raise ValueError(f"Unknown orientation mode: {orientation}")
+
+        self.input_scaling = input_scaling
+        self.orientation = (
+            "none" if mode != Mode.TRAIN and orientation == "augment" else orientation
+        )
         self.normalization_angles: list[int] = []
         self.normalization_chiralities: list[bool] = []
         
@@ -56,12 +82,12 @@ class TODataset(Dataset):
             else:
                 raise ValueError(f"Unknown mode: {mode}")
 
-            # stress distribution has a very high peak and lots of low values, whereas the result will have only values between 0 and 1
-            # To avoid floating point errors, the stress values are normalized before being used as input
-            stresses = torch.log1p(torch.from_numpy(data["stresses"][start:stop]))
-            
-            # same for strain energy density
-            strain_energies = torch.log1p(torch.from_numpy(data["strain_energy_densities"][start:stop]))
+            stresses = torch.from_numpy(data["stresses"][start:stop])
+            strain_energies = torch.from_numpy(data["strain_energy_densities"][start:stop])
+            if input_scaling == "log1p":
+                # Compress the highly skewed distributions before passing them to the model.
+                stresses = torch.log1p(stresses)
+                strain_energies = torch.log1p(strain_energies)
             densities = torch.from_numpy(data["densities"][start:stop].copy())
             volume_fractions = data["volume_fractions"][start:stop]
             loads = loads[start:stop]
@@ -90,7 +116,10 @@ class TODataset(Dataset):
                 density=densities[i]
             )
             
-            rotation, mirrored, input, output = normalize_sample(input, output)
+            if self.orientation == "normalized":
+                rotation, mirrored, input, output = normalize_sample(input, output)
+            else:
+                rotation, mirrored = 0, False
             assert output is not None
             
             self.normalization_angles.append(rotation)
@@ -103,4 +132,16 @@ class TODataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        return self.samples[idx].input, self.samples[idx].output
+        sample = self.samples[idx]
+        if self.orientation != "augment":
+            return sample.input, sample.output
+
+        rotations = int(torch.randint(4, ()).item())
+        mirrored = bool(torch.randint(2, ()).item())
+        model_input, model_output = rotate_sample(
+            sample.input, sample.output, n_rotations=rotations
+        )
+        if mirrored:
+            model_input, model_output = mirror_sample(model_input, model_output)
+        assert model_output is not None
+        return model_input, model_output

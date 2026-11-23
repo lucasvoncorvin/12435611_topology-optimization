@@ -53,6 +53,8 @@ class TrainingConfig:
     loss: str
     n_epochs: int # max number of epochs
     lr_scheduler: str | None = None  # learning rate scheduler, e.g., "ReduceLROnPlateau"
+    input_scaling: str = "log1p"
+    orientation: str = "normalized"
 
 
 @dataclass

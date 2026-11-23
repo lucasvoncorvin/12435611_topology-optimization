@@ -14,7 +14,7 @@ from topoptlab.elements.linear_elasticity_2d import lk_linear_elast_2d
 from topoptlab.fem import assemble_matrix, create_matrixinds
 from matplotlib import pyplot as plt
 
-from src.dataset import TODataset, Mode
+from src.dataset import TODataset, Mode, orientation_for_evaluation
 from src.model_types import Checkpoint
 from src.utils import boundary_node_indices, collate_samples
 
@@ -330,7 +330,12 @@ def main():
     # load dataset
     npz_path = project_root / "data" / "processed" / "topopt_data.npz"
     logger.info(f"Loading dataset from {npz_path}")
-    dataset = TODataset(npz_path, mode=mode)
+    dataset = TODataset(
+        npz_path,
+        mode=mode,
+        input_scaling=checkpoint.training_config.input_scaling,
+        orientation=orientation_for_evaluation(checkpoint.training_config.orientation),
+    )
     
     
     np.random.seed(42)

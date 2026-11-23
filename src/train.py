@@ -8,10 +8,10 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from .dataset import TODataset, Mode
+from .dataset import TODataset, Mode, orientation_for_evaluation
 from .loss import BinaryMissmatchLoss, CustomLoss, ModularLoss, SinkhornDistance
 from .utils import MODEL_REGISTRY, build_model, collate_samples
-from .model_types import ModelSpec, ModelTrainingModeConfig, Checkpoint, TrainingResults, TrainingConfig
+from .model_types import ModelSpec, Checkpoint, TrainingResults, TrainingConfig
 
 
 logger = logging.getLogger(__name__)
@@ -180,13 +180,23 @@ def optimize(checkpoint: Checkpoint, npz_path: Path, custom_training_subdir: Pat
     # Data
     # prepare data loaders, loss function, model, and optimizer
     train_dataloader = DataLoader(
-        dataset=TODataset(npz_path, Mode.TRAIN),
+        dataset=TODataset(
+            npz_path,
+            Mode.TRAIN,
+            input_scaling=checkpoint.training_config.input_scaling,
+            orientation=checkpoint.training_config.orientation,
+        ),
         batch_size=checkpoint.training_config.batch_size,
         collate_fn=collate_samples,
         shuffle=True,
     )
     validate_dataloader = DataLoader(
-        dataset=TODataset(npz_path, Mode.VALIDATE),
+        dataset=TODataset(
+            npz_path,
+            Mode.VALIDATE,
+            input_scaling=checkpoint.training_config.input_scaling,
+            orientation=orientation_for_evaluation(checkpoint.training_config.orientation),
+        ),
         batch_size=checkpoint.training_config.batch_size,
         collate_fn=collate_samples
     )
@@ -376,18 +386,13 @@ if __name__ == "__main__":
     else:
         # initialize a new checkpoint if no checkpoint file is provided
         model_spec = ModelSpec(
-            model_name="vit_v4",
-            embedding_dims=128,
-            query_dims=128,
-            n_attention_blocks=6, # layers, I dont know why I called them blocks
+            model_name="vit_v1",
+            embedding_dims=4,
+            query_dims=2,
+            n_attention_blocks=1,
             n_attention_heads=2,
-            patch_size=16,
-            patch_overlap=2,
-            training_mode_config=ModelTrainingModeConfig(
-                attention_output_dropout_rate=0.1,
-                mlp_output_dropout_rate=0.1,
-                attention_hidden_dropout_rate=0.0,
-            )
+            patch_size=8,
+            patch_overlap=0,
         )
         
         assert model_spec.model_name in MODEL_REGISTRY.keys()
@@ -396,8 +401,10 @@ if __name__ == "__main__":
             n_epochs=n_epochs,
             batch_size=256,
             optimizer="adam",
-            learning_rate=0.0003,
-            loss="mse_binary_mismatch_05",
+            learning_rate=0.001,
+            loss="mse",
+            input_scaling="raw",
+            orientation="augment",
             # lr_scheduler="ReduceLROnPlateau"
         )
         checkpoint = Checkpoint(
