@@ -28,6 +28,7 @@ class SampleEvaluation:
     rel_compliance_error_continuous: float # values in interval [0, 1] using penalization for intermediate values (compliance function in SIMP)
     rel_volume_error: float # error in the volume fraction of the topology
     density_error: float # measure for non-binary densities (values not equal to 0 or 1)
+    shape_overlap: float # intersection over union (IoU) between predicted and target topologies after rounding to binary values
     
 @dataclass
 class ModelEvaluation:
@@ -189,10 +190,22 @@ def density_error(predicted):
     
     return torch.abs(predicted - predicted.round()).mean()
 
+def shape_overlap(predicted, target):
+    """
+    Compute the shape overlap between the predicted and target topologies.
 
-def floating_material_error(predicted, target):
-    # todo: how do we define floating material error?
-    pass
+    predicted: predicted topology as a 64x64 tensor of material densities between 0 and 1
+    target: target topology as a 64x64 tensor of material densities between 0 and 1
+
+    Returns the shape overlap (IoU) for this pair as a scalar value between 0 and 1.
+    """
+    predicted_binary = predicted.round()
+    target_binary = target.to(predicted.device).round()
+    
+    intersection = (predicted_binary * target_binary).sum()
+    union = predicted_binary.sum() + target_binary.sum() - intersection
+    
+    return (intersection / union).item() if union > 0 else 1.0
 
 def rel_volume_error(predicted, target_volume_fraction):
     """Compute the absolute error in material volume fraction between the predicted and target topologies"""
@@ -229,6 +242,7 @@ def evaluate_prediction(predicted, target, load, fixed_dofs, volume_fraction):
         "rel_compliance_error_continuous": rel_compliance_error(predicted, target, load, fixed_dofs, binarify_densities=False),
         "density_error": float(density_error(predicted)),
         "rel_volume_error": float(rel_volume_error(predicted, volume_fraction)),
+        "shape_overlap": float(shape_overlap(predicted, target)),
     }
     
 def evaluate_model(model: torch.nn.Module, dataset: TODataset, sample_ids: list[int] | None = None):
@@ -252,6 +266,7 @@ def evaluate_model(model: torch.nn.Module, dataset: TODataset, sample_ids: list[
             target = target_output.density
             # The dataset transforms the fields and physical parameters together, so evaluate in that frame.
             load = torch.cat((model_input.load_position, model_input.load_vector)).numpy()
+            load[3] *= -1  # Convert image-space y (down) to the FEM y direction (up).
             boundary_nodes = np.asarray(boundary_node_indices())
             fixed_nodes = boundary_nodes[model_input.boundary_conditions.bool().numpy()]
             fixed_dofs = np.column_stack((2 * fixed_nodes, 2 * fixed_nodes + 1)).reshape(-1)
@@ -297,7 +312,7 @@ def main():
         project_root
         / "trainings"
         / "Vit_V4_e128_b6_h4_p16_c2_o2"
-        / "adam_0.0003_mse_binary_mismatch_03_datt0.1_dmlp0.1"
+        / "adam_0.0003_mse_datt0.1_dmlp0.1"
         / "best.pth"
     )
     #*#####################################
