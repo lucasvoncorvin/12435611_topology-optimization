@@ -65,7 +65,6 @@ def build_positional_encoding(patch_size, embedding_dims) -> torch.Tensor:
     return torch.cat((encode(rows), encode(cols)), dim=1).float()
 
 def build_parameter_vector(load_positions, load_vectors, boundary_conditions, volume_fractions):
-    # todo: write tests for this function
     """Returns a representation of the load, the boundary conditions and the volume fraction
     with length 1 + 4 + 4*64 = 261 (volume fraction + load representation + boundary conditions)
     
@@ -152,7 +151,6 @@ def patchify(images, grid_shape: tuple[int, int], overlap: int):
         .permute(0, 1, 2, 4, 5, 3)
         .contiguous()
     )
-
 
 def unpatchify_grid(patches: torch.Tensor) -> torch.Tensor:
     """Reconstruct batched 64x64 images from non-overlapping patch grids."""

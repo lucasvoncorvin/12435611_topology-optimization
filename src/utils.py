@@ -56,7 +56,7 @@ def _rotate_load_vector(load_vector: torch.Tensor, n_rotations: int) -> torch.Te
         fx, fy = fy, -fx
     return torch.stack((fx, fy))
 
-
+# covered by normalize_sample (normalize_rotation) test
 def rotate_sample(model_input: ModelInput, model_output: ModelOutput | None = None, n_rotations: int = 0) -> tuple[ModelInput, ModelOutput | None]:
     
     if n_rotations == 0:
@@ -96,6 +96,7 @@ def _mirror_load_vector(load_vector: torch.Tensor) -> torch.Tensor:
     fx, fy = load_vector
     return torch.stack((-fx, fy))
 
+# covered by normalize_sample (normalize chirality) test
 def mirror_sample(model_input: ModelInput, model_output: ModelOutput | None = None) -> tuple[ModelInput, ModelOutput | None]:
     mirrored_input = ModelInput(
         stress=torch.flip(model_input.stress, dims=(1,)),
@@ -113,6 +114,7 @@ def mirror_sample(model_input: ModelInput, model_output: ModelOutput | None = No
     return mirrored_input, mirrored_output
 
 
+# covered by normalize_sample test
 def normalize_sample_rotation(model_input: ModelInput, model_output: ModelOutput | None = None) -> tuple[int, ModelInput, ModelOutput | None]:
     """Rotate a boundary load onto the top edge (y = 0)."""
     
@@ -128,6 +130,7 @@ def normalize_sample_rotation(model_input: ModelInput, model_output: ModelOutput
     
     return n_rotations, *rotate_sample(model_input=model_input, model_output=model_output, n_rotations=n_rotations)
 
+# covered by normalize_sample test
 def normalize_sample_chirality(model_input: ModelInput, model_output: ModelOutput | None = None) -> tuple[bool, ModelInput, ModelOutput | None]:
     """Normalize the chirality (mirror symmetry) of the sample's input tensors."""
     mirrored = False
@@ -137,16 +140,13 @@ def normalize_sample_chirality(model_input: ModelInput, model_output: ModelOutpu
     else:
         return False, model_input, model_output
 
-# TODO: review this
 def normalize_sample(model_input: ModelInput, model_output: ModelOutput | None = None) -> tuple[int, bool, ModelInput, ModelOutput | None]:
-    # todo: write tests for this function
     """Normalize both the rotation and chirality of the sample."""
     n_rotations, model_input, model_output = normalize_sample_rotation(model_input, model_output)
     mirrored, model_input, model_output = normalize_sample_chirality(model_input, model_output)
     return n_rotations, mirrored, model_input, model_output
 
 def encode_boundary_conditions(fixed_dofs):
-    # todo: write tests for this function
     """Encode paired fixed degrees of freedom as a 256-entry boundary-node mask."""
     fixed_dofs_set = set(fixed_dofs)
     for dof in fixed_dofs_set:
