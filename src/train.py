@@ -245,7 +245,17 @@ def optimize(checkpoint: Checkpoint, npz_path: Path, custom_training_subdir: Pat
         optimizer.load_state_dict(checkpoint.optimizer_state_dict)
     lr_scheduler = None
     if checkpoint.training_config.lr_scheduler is not None:
-        lr_scheduler = make_lr_scheduler(checkpoint.training_config.lr_scheduler, optimizer)
+        lr_scheduler = make_lr_scheduler(
+            checkpoint.training_config.lr_scheduler,
+            optimizer,
+            mode="min",
+            factor=0.5,
+            patience=30,
+            threshold=1e-3,
+            threshold_mode="rel",
+            cooldown=5,
+            min_lr=1e-6,
+        )    
     logging.info(f"Initialized optimizer {checkpoint.training_config.optimizer} with lr={checkpoint.training_config.learning_rate}")
     
     
@@ -395,13 +405,18 @@ if __name__ == "__main__":
     else:
         # initialize a new checkpoint if no checkpoint file is provided
         model_spec = ModelSpec(
-            model_name="vit_v1",
-            embedding_dims=4,
-            query_dims=2,
-            n_attention_blocks=1,
-            n_attention_heads=2,
-            patch_size=8,
-            patch_overlap=0,
+            model_name="vit_v4",
+            embedding_dims=128,
+            query_dims=128,
+            n_attention_blocks=6,
+            n_attention_heads=4,
+            patch_size=16,
+            patch_overlap=2,
+            training_mode_config=ModelTrainingModeConfig(
+                attention_output_dropout_rate=0.1,
+                mlp_output_dropout_rate=0.1,
+            ),
+            
         )
         
         assert model_spec.model_name in MODEL_REGISTRY.keys()
@@ -410,11 +425,11 @@ if __name__ == "__main__":
             n_epochs=n_epochs,
             batch_size=256,
             optimizer="adam",
-            learning_rate=0.001,
-            loss="mse",
-            input_scaling="raw",
-            orientation="augment",
-            # lr_scheduler="ReduceLROnPlateau"
+            learning_rate=0.0003,
+            loss="mse_bmvf_equal",
+            input_scaling="log1p",
+            orientation="normalized",
+            lr_scheduler="ReduceLROnPlateau"
         )
         checkpoint = Checkpoint(
             epoch=0,
