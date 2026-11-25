@@ -9,9 +9,9 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 from .dataset import TODataset, Mode, orientation_for_evaluation
-from .loss import BinaryMissmatchLoss, CustomLoss, ModularLoss, SinkhornDistance
+from .loss import BinaryMissmatchLoss, CustomLoss, ModularLoss, SinkhornDistance, VolumeFractionLoss
 from .utils import MODEL_REGISTRY, build_model, collate_samples
-from .model_types import ModelSpec, Checkpoint, TrainingResults, TrainingConfig
+from .model_types import ModelSpec, ModelTrainingModeConfig, Checkpoint, TrainingResults, TrainingConfig
 
 
 logger = logging.getLogger(__name__)
@@ -102,7 +102,12 @@ def make_loss(loss_name: str, patch_size=None):
             loss_fns=torch.nn.ModuleList([nn.MSELoss(), BinaryMissmatchLoss()]),
             weights=[1-weight, weight]
         )
-    
+    if loss_name == "mse_bmvf_equal": # MSE loss combined with binary mismatch and volume fraction
+        return ModularLoss(
+            loss_fns=torch.nn.ModuleList([nn.MSELoss(), BinaryMissmatchLoss(), VolumeFractionLoss()]),
+            weights=[1/3, 1/3, 1/3]
+        )
+        
     else:
         raise ValueError(f"Unsupported loss function: {loss_name}")
 
@@ -122,6 +127,8 @@ def train(model: torch.nn.Module, dataloader: DataLoader, optimizer: torch.optim
             load = x[:, 1:5]
             target_volume_fraction = x[:, 0]
             loss = loss_fn(pred, y, load, target_volume_fraction)
+        elif isinstance(loss_fn, ModularLoss):
+            loss = loss_fn(pred.densities, y.densities, target_volume_fraction=x.volume_fractions)
         else:
             loss = loss_fn(pred.densities, y.densities)
         
@@ -151,6 +158,8 @@ def validate(model: torch.nn.Module, dataloader: DataLoader, loss_fn, device):
                 load = torch.stack([batch_input.load_positions, batch_input.load_vectors], dim=-1)
                 target_volume_fraction = batch_input.volume_fractions
                 loss = loss_fn(pred, y, load, target_volume_fraction)
+            elif isinstance(loss_fn, ModularLoss):
+                loss = loss_fn(pred.densities, y.densities, target_volume_fraction=x.volume_fractions)
             else:
                 loss = loss_fn(pred.densities, y.densities)
             

@@ -36,8 +36,9 @@ class VolumeFractionLoss(torch.nn.Module):
         """Penalizes the difference in volume fraction between the predicted and target designs."""
         
         design_domain_volume = torch.numel(pred[0]) # should be 64*64
-        predicted_volume_fraction = torch.sum(pred, dim=1) / design_domain_volume
-        loss = (target_volume_fraction-predicted_volume_fraction).abs()
+        predicted_volume_fraction = pred.flatten(start_dim=1).sum(dim=1) / design_domain_volume
+        target_volume_fraction = target_volume_fraction.reshape_as(predicted_volume_fraction)
+        loss = (target_volume_fraction - predicted_volume_fraction).abs()
         return loss.mean() # average over batch
 
 
@@ -189,19 +190,26 @@ class ModularLoss(torch.nn.Module):
         # normalize weights to sum to 1
         self.weights = [w / sum(weights) for w in weights]
         
-    def forward(self, pred, target, args_list: list[list] | None = None, kwargs_list: list[dict] | None = None):
+    def forward(self, pred, target, args_list: list[list] | None = None, kwargs_list: list[dict] | None = None,
+                target_volume_fraction: torch.Tensor | None = None):
         """
         Args:
             pred: Predicted output.
             target: Ground truth output.
             args_list: List of positional arguments for each loss function. One sublist per loss function.
             kwargs_list: List of keyword arguments for each loss function. One dictionary per loss function.
+            target_volume_fraction: Requested material fraction per sample for VolumeFractionLoss.
         Returns:
             Weighted sum of the individual loss functions.
         """
         total_loss = 0
         for i, (loss_fn, weight) in enumerate(zip(self.loss_fns, self.weights)):
-            total_loss += weight * loss_fn(pred, target, *(args_list[i] if args_list is not None else []), **(kwargs_list[i] if kwargs_list is not None else {}))
+            component_target = target
+            if isinstance(loss_fn, VolumeFractionLoss):
+                if target_volume_fraction is None:
+                    raise ValueError("VolumeFractionLoss requires target_volume_fraction")
+                component_target = target_volume_fraction
+            total_loss += weight * loss_fn(pred, component_target, *(args_list[i] if args_list is not None else []), **(kwargs_list[i] if kwargs_list is not None else {}))
         return total_loss
     
     def __str__(self):
