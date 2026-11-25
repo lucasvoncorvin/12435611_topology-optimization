@@ -10,3 +10,8 @@ topopt_data.csv
 *.pth
 *.pt
 *.png
+
+# local stuff
+.local
+trainings/
+tensorboard/
