@@ -338,7 +338,7 @@ def optimize(checkpoint: Checkpoint, npz_path: Path, custom_training_subdir: Pat
             writer.add_scalar("Loss/train", train_loss, epoch)
             writer.add_scalar("Loss/validation", validation_loss, epoch)
             
-            logger.info(f"Epoch: {epoch} | Time: {time() - start_time:.2f}s | Train Loss: {train_loss:.5f} | Validation Loss {validation_loss:.5f} | Delta {validation_loss-train_loss:.5f} | LR Scheduler: {checkpoint.training_config.lr_scheduler if checkpoint.training_config.lr_scheduler is not None else 'None'}")
+            logger.info(f"Epoch: {epoch} | Time: {time() - start_time:.2f}s | Train Loss: {train_loss:.5f} | Validation Loss {validation_loss:.5f} | Delta {validation_loss-train_loss:.5f} | LR: {optimizer.param_groups[0]['lr']:.2e} | LR Scheduler: {checkpoint.training_config.lr_scheduler if checkpoint.training_config.lr_scheduler is not None else 'None'}")
             
             # some checkpoints at specific epochs
             checkpoint = Checkpoint(
