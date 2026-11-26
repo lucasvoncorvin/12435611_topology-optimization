@@ -309,6 +309,13 @@ def optimize(checkpoint: Checkpoint, npz_path: Path, custom_training_subdir: Pat
         writer.add_text("Validation/random_samples/indices", f"Validation indices: {example_indices}", 0)
         writer.add_images("Validation/random_samples/target", examples[1].densities.unsqueeze(1), 0)
         best_validation_loss = min(validation_losses) if validation_losses else float("inf")
+        early_stopping_patience = 50
+        early_stopping_best_loss = float("inf")
+        last_improvement_epoch = start_epoch
+        for past_epoch, past_loss in enumerate(validation_losses, start=1):
+            if past_loss < early_stopping_best_loss * (1 - 1e-3):
+                early_stopping_best_loss = past_loss
+                last_improvement_epoch = past_epoch
         for epoch in range(start_epoch + 1, checkpoint.training_config.n_epochs + 1):
             start_time = time() # for logging epoch duration
             
@@ -316,6 +323,9 @@ def optimize(checkpoint: Checkpoint, npz_path: Path, custom_training_subdir: Pat
             validation_loss = validate(vit, validate_dataloader, loss_fn, device)
             if lr_scheduler is not None:
                 lr_scheduler.step(validation_loss)
+            if validation_loss < early_stopping_best_loss * (1 - 1e-3):
+                early_stopping_best_loss = validation_loss
+                last_improvement_epoch = epoch
             
             # tensorboard logging for validation examples
             if epoch % 10 == 0:
@@ -355,6 +365,14 @@ def optimize(checkpoint: Checkpoint, npz_path: Path, custom_training_subdir: Pat
                 best_checkpoint_path = training_subdir / "best.pth"
                 logging.info("Saving checkpoint to %s", best_checkpoint_path)
                 checkpoint.save(best_checkpoint_path)
+
+            if epoch - last_improvement_epoch >= early_stopping_patience:
+                logger.info(
+                    "Early stopping at epoch %s: validation loss has not improved "
+                    "meaningfully for %s epochs.",
+                    epoch, early_stopping_patience,
+                )
+                break
             
     finally:
         writer.close()
@@ -365,7 +383,7 @@ def optimize(checkpoint: Checkpoint, npz_path: Path, custom_training_subdir: Pat
 
 if __name__ == "__main__":
     
-    n_epochs = 500
+    n_epochs = 1000
     
     checkpoint_file = None  # Path("trainings/ViT_V4_e128_b9_h4_p16_c2_o2/adam_0.0003_mse_datt0.1_dmlp0.1/epoch_60.pth") # None
     
@@ -425,7 +443,7 @@ if __name__ == "__main__":
             n_epochs=n_epochs,
             batch_size=256,
             optimizer="adam",
-            learning_rate=0.0003,
+            learning_rate=0.001,
             loss="mse_bmvf_equal",
             input_scaling="log1p",
             orientation="normalized",
