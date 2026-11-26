@@ -309,7 +309,7 @@ def optimize(checkpoint: Checkpoint, npz_path: Path, custom_training_subdir: Pat
         writer.add_text("Validation/random_samples/indices", f"Validation indices: {example_indices}", 0)
         writer.add_images("Validation/random_samples/target", examples[1].densities.unsqueeze(1), 0)
         best_validation_loss = min(validation_losses) if validation_losses else float("inf")
-        early_stopping_patience = 50
+        early_stopping_patience = 100
         early_stopping_best_loss = float("inf")
         last_improvement_epoch = start_epoch
         for past_epoch, past_loss in enumerate(validation_losses, start=1):
