@@ -308,11 +308,12 @@ def optimize(checkpoint: Checkpoint, npz_path: Path, custom_training_subdir: Pat
     try:
         writer.add_text("Validation/random_samples/indices", f"Validation indices: {example_indices}", 0)
         writer.add_images("Validation/random_samples/target", examples[1].densities.unsqueeze(1), 0)
-        best_validation_loss = min(validation_losses) if validation_losses else float("inf")
+        warmup_epochs = 10
+        best_validation_loss = min(validation_losses[warmup_epochs:], default=float("inf"))
         early_stopping_patience = 100
         early_stopping_best_loss = float("inf")
         last_improvement_epoch = start_epoch
-        for past_epoch, past_loss in enumerate(validation_losses, start=1):
+        for past_epoch, past_loss in enumerate(validation_losses[warmup_epochs:], start=warmup_epochs + 1):
             if past_loss < early_stopping_best_loss * (1 - 1e-3):
                 early_stopping_best_loss = past_loss
                 last_improvement_epoch = past_epoch
@@ -321,9 +322,9 @@ def optimize(checkpoint: Checkpoint, npz_path: Path, custom_training_subdir: Pat
             
             train_loss = train(vit, train_dataloader, optimizer, loss_fn, device)
             validation_loss = validate(vit, validate_dataloader, loss_fn, device)
-            if lr_scheduler is not None:
+            if epoch > warmup_epochs and lr_scheduler is not None:
                 lr_scheduler.step(validation_loss)
-            if validation_loss < early_stopping_best_loss * (1 - 1e-3):
+            if epoch > warmup_epochs and validation_loss < early_stopping_best_loss * (1 - 1e-3):
                 early_stopping_best_loss = validation_loss
                 last_improvement_epoch = epoch
             
@@ -360,13 +361,13 @@ def optimize(checkpoint: Checkpoint, npz_path: Path, custom_training_subdir: Pat
                 checkpoint.save(epoch_checkpoint_path)
             
             # save best checkpoint based on validation loss
-            if validation_loss < best_validation_loss and epoch > 10: # first 10 epochs are useless (i think)
+            if validation_loss < best_validation_loss and epoch > warmup_epochs: # first 10 epochs are useless (i think)
                 best_validation_loss = validation_loss
                 best_checkpoint_path = training_subdir / "best.pth"
                 logging.info("Saving checkpoint to %s", best_checkpoint_path)
                 checkpoint.save(best_checkpoint_path)
 
-            if epoch - last_improvement_epoch >= early_stopping_patience:
+            if epoch > warmup_epochs and epoch - last_improvement_epoch >= early_stopping_patience:
                 logger.info(
                     "Early stopping at epoch %s: validation loss has not improved "
                     "meaningfully for %s epochs.",
