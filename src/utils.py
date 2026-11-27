@@ -188,7 +188,6 @@ def collate_samples(
 
     return batched_input, batched_output
 
-
 def idx_to_coordinates(idx, normalize=False):
     """translate a node index to its (normalized) coordinates within the grid
     
@@ -215,7 +214,6 @@ def coordinates_to_idx(x, y, normalized=False) -> int:
         y = int(round(y * 64))
     return x * 65 + y
 
-
 def boundary_node_indices() -> list[int]:
     """Return boundary nodes in the same index order used by the parameter vector."""
     return [
@@ -224,14 +222,12 @@ def boundary_node_indices() -> list[int]:
         if node // 65 in (0, 64) or node % 65 in (0, 64)
     ]
     
-
 def build_model(model_spec: ModelSpec) -> nn.Module:
     """Construct a registered model from the current model specification."""
     model_class = MODEL_REGISTRY.get(model_spec.model_name)
     if model_class is None:
         raise ValueError(f"Model {model_spec.model_name} not found in registry")
     return model_class(model_spec)
-
 
 def load_model_from_checkpoint_path(checkpoint_path: Path, device: torch.device = torch.device("cpu")) -> nn.Module:
     """
